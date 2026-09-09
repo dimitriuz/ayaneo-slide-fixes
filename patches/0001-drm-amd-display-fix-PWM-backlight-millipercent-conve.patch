@@ -1,0 +1,63 @@
+Subject: [PATCH] drm/amd/display: fix PWM backlight millipercent conversion
+
+Commit 3c108046e1d6 ("drm/amd/display: Add power module on Linux")
+switched the non-AUX (PWM) backlight path from writing the 16-bit PWM
+level directly with dc_link_set_backlight_level() to passing a
+millipercent value to mod_power_set_backlight_percent():
+
+	brightness = DIV_ROUND_CLOSEST(brightness * 100, (max - min)) * 1000;
+
+By this point convert_brightness_from_user() has already mapped the
+user's value into the absolute range [min, max], where min and max come
+from get_brightness_range() (0x101 * the ACPI ATIF min/max_input_signal).
+mod_power_set_backlight_percent() however expects a value relative to
+that range, because backlight_millipercent_to_pwm() computes:
+
+	pwm = min_backlight_pwm +
+	      millipercent * backlight_range / 100000;
+
+The conversion is therefore wrong in three ways:
+
+ - min is never subtracted, so the bottom of the range is unreachable:
+   the dimmest setting requests min * 100000 / (max - min) millipercent
+   instead of 0.
+
+ - the quotient is computed in whole percent and only then multiplied by
+   1000, so the usable resolution collapses to 100 steps regardless of
+   the advertised max_brightness.
+
+ - the result can exceed 100000, so the top of the user range is clamped
+   and becomes a dead zone.
+
+On an AYANEO SLIDE, where ATIF reports min_input_signal 38 and
+max_input_signal 218 (so min = 9766, max = 56026 and max_brightness is
+56026), the observable effects are:
+
+ - brightness 0 requests 21000 millipercent instead of 0, so the panel
+   cannot be dimmed below roughly 21% of its range
+ - the backlight level only changes every ~560 of the 56026 steps
+ - every value above ~43915 of 56026 is clamped to 100%
+
+Convert to millipercent relative to [min, max], and scale before
+dividing so the full precision is retained.
+
+Fixes: 3c108046e1d6 ("drm/amd/display: Add power module on Linux")
+---
+--- a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c
++++ b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c
+@@ -5448,13 +5448,14 @@
+ 	if (caps->aux_support) {
+ 		rc = mod_power_set_backlight_nits(dm->power_module, stream, brightness,
+ 			AUX_BL_DEFAULT_TRANSITION_TIME_MS, false, true);
+ 	} else {
+ 		/* power module uses millipercent */
+ 		get_brightness_range(caps, &min, &max);
+-		brightness = DIV_ROUND_CLOSEST(brightness * 100, (max - min)) * 1000;
++		brightness = DIV_ROUND_CLOSEST_ULL((u64)(brightness - min) * 100000,
++						   max - min);
+ 		rc = mod_power_set_backlight_percent(dm->power_module, stream,
+ 						     brightness, 0, false);
+ 	}
+ 
+ 	/*
+ 	 * Some kms clients create a ramped backlight transition effect
