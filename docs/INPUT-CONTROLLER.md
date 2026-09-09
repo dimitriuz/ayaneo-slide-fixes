@@ -205,13 +205,48 @@ low end Steam never reached. To have only one, disable the desktop layout in
 
 ---
 
-## 3. The stick deadzones — stored configuration, not (only) worn hardware
+## 3. The stick deadzones — SOLVED: a stored setting, disabled once from Windows
 
 ### Symptom
 
 The **right** stick must be pushed roughly halfway before the pointer moves at all,
 and then it moves fast. Motion is asymmetric: right reaches full speed sooner than
 left.
+
+### The fix, in one line
+
+**Boot Windows on the real hardware, open AYASpace, and turn the stick deadzone
+off.** The setting is stored in the controller, so it persists into Linux
+immediately - no Linux-side change, no kernel patch, no firmware flash. Measured
+afterwards on Linux the deadzone is approximately **0%** on both sticks, down
+from 15-25% (left) and 30-50% (right).
+
+This vindicates the original hunch that the device had been "set up that way in
+Windows" at some point. Nothing about the hardware was faulty.
+
+**Important detail:** AYASpace exposes the deadzone as an **on/off switch only** -
+there is no value to tune - plus separate **sensitivity** sliders for each stick.
+That matches the reverse engineering exactly: the enable path resolves to a
+single *bit* (the high nibble of a config byte, inverted), with no value field,
+which is why no value encoding was ever found in the binary.
+
+Windows does not need to stay installed; it only has to run once. A dual-boot
+install on a second partition works and leaves Limine as the default boot entry
+(verified: `Boot0000* Limine` still first in `BootOrder` after Windows Setup).
+Windows To Go on external media would work equally well.
+
+### Still open: toggling it from Linux
+
+The channel is fully identified (vendor HID feature report `0x41`, 7 bytes, on
+the keyboard MCU) but the payload bytes are not, so there is currently no way to
+flip this from Linux without booting Windows again. Capturing them takes about
+five minutes with USBPcap while toggling the switch - see
+[CAPTURE-DEADZONE.md](CAPTURE-DEADZONE.md). With those bytes,
+`scripts/ayaneo-deadzone.py` can be finished and the round trip through Windows
+disappears for good.
+
+Since the setting is a single boolean, the capture only needs two samples: the
+report sent when turning it **off**, and the one sent when turning it **on**.
 
 ### Measure it properly: hold, don't sweep
 

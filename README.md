@@ -174,9 +174,10 @@ Separate from the backlight, three input issues on the same device — see
    the motion comes from Steam's Desktop Layout injected via XTEST, which bypasses
    libinput acceleration. Fixed by driving InputPlumber's own `mouse` target instead,
    which exposes a `speed_pps` knob.
-3. **Right-stick deadzone far too wide** (**not** fixable) — the pad reports nothing
-   below ~50% of electrical range at steady state, with a quarter of mechanical travel
-   already reading 77% FS. That is AYANEO firmware, upstream of the kernel.
+3. **Stick deadzone far too wide** (**fixed**) — both sticks, 15-25% (left) and
+   30-50% (right) of full scale before anything registers. It turned out to be a
+   *stored setting*, not hardware: turning the deadzone off once in AYASpace on real
+   hardware persists into Linux, taking it to ~0%.
 
 ## License
 
