@@ -497,6 +497,71 @@ Gotchas found while doing this, in case you repeat it:
 * Boot the ISO only until Windows is installed. Leaving the CD ahead of the disk in the
   boot order restarts Setup instead of resuming OOBE.
 
+## Reverse engineering AYASpace: the vendor HID channel
+
+Static analysis of `AYASpaceCef.exe` 3.2.0.4 (extracted from a VM install with
+`qemu-nbd` + `ntfs-3g -o ro,force`) identified the control channel exactly.
+
+**The channel**
+
+```
+device : USB VID 1C4F PID 007C   (the slide-out keyboard's MCU - not the gamepad)
+iface  : the one whose report descriptor opens Usage Page 0xFF00, Usage 0x02
+         (this is the "02" in AYASpace's Windows path filter "&mi_02#")
+report : FEATURE, Report ID 0x41, 7 data bytes, WRITE-ONLY - GET_REPORT stalls
+```
+
+Confirmed from the device's own report descriptor on `hidraw1`:
+
+```
+06 00 ff   Usage Page (Vendor 0xFF00)
+09 02      Usage 0x02
+85 41      Report ID 0x41
+75 08 95 07  Report Size 8 x Count 7
+b1 02      FEATURE (Data,Var,Abs)
+```
+
+**How the JS UI reaches native code.** CEF handlers are registered with the
+idiom `lea rax,[handler]; lea rdx,[name]; call register`, so the handler is the
+`lea rax` immediately preceding each name string:
+
+| JS method | handler |
+|---|---|
+| `master.set_stick_deadzone` | `0x140305a20` |
+| `master.set_hall_stick` | adjacent registration |
+| `super_joy.set_stick_deadzone` | `0x1400d70e0` |
+| `super_joy.get_stick_deadzone` | `0x1400d6e70` |
+
+`master.*` is the built-in controller (the AYASpace "Master Controller" menu).
+`super_joy.*` is AYANEO's separate *Super Joy* accessory - a false trail that
+cost a couple of hours, so do not start there.
+
+`master.set_stick_deadzone` takes `enable`, `StickDeadZone`, `data`, and the
+enable path resolves to a config byte where the **high nibble is the enable bit,
+inverted** (it is really a *disable* flag), low nibble preserved.
+
+**Where static analysis stops.** The chain from the handler to the transport
+runs through C++ virtual dispatch, which `objdump` cannot resolve. A BFS over
+198 functions to depth 6 reached none of: the EC port helpers, libusb, ViGEm, or
+the HID feature builder. Finishing this needs either a decompiler with vtable
+analysis (Ghidra) or - far cheaper - a USB capture of report `0x41`. See
+[CAPTURE-DEADZONE.md](CAPTURE-DEADZONE.md).
+
+**Other things the same binary gave up**
+
+* *Keyboard backlight*: HID feature report, `report[0]=0x02`, `report[1]=` value
+  `0..100` (plus `110` as a special case), 9 bytes total. Directly implementable.
+* *EC access*: ITE SuperIO on ports `0x4E/0x4F` - unlock `87 01 55 55`, select
+  LDN 4 via reg `0x07`, read the EC base from regs `0x60`/`0x61`, exit with
+  `0xAA`. Used for TDP/RGB/fan, **not** for the sticks.
+
+**Why a VM cannot apply the setting.** With the gamepad *and* the keyboard MCU
+both passed through (verified: both interfaces showed `driver=usbfs`, the host
+lost `hidraw0/1`), AYASpace still failed with "check connection", and every live
+value (battery, TDP, fan) was dead. AYASpace gates on the **EC**, which sits
+behind I/O ports `0x4E/0x4F` and cannot be virtualised. Real hardware - Windows
+To Go on external media - is the only route.
+
 ## Diagnostic methodology
 
 Reusable on any handheld, and where the real conclusions came from.
