@@ -242,7 +242,7 @@ the keyboard MCU) but the payload bytes are not, so there is currently no way to
 flip this from Linux without booting Windows again. Capturing them takes about
 five minutes with USBPcap while toggling the switch - see
 [CAPTURE-DEADZONE.md](CAPTURE-DEADZONE.md). With those bytes,
-`scripts/ayaneo-deadzone.py` can be finished and the round trip through Windows
+`scripts/ayaneo-ctl.py` can be finished and the round trip through Windows
 disappears for good.
 
 Since the setting is a single boolean, the capture only needs two samples: the

@@ -3,6 +3,7 @@
 #
 # InputPlumber's device detection is asynchronous, so a plain
 # After=inputplumber.service races and fails - hence the retry loop.
+# The filename is arbitrary; pass a path to override.
 PROFILE="${1:-/etc/inputplumber/profiles/stick-mouse.yaml}"
 DEVICE_NAME="${2:-AYANEO Slide}"
 

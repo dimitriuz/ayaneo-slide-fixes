@@ -155,12 +155,25 @@ own `amd-staging-drm-next`. No newer, test, dev or beta kernel fixes it.
 
 ```
 patches/   the two kernel patches (git am format)
-docs/      root cause, build guide, kernel parameters, controller/input findings
-config/    InputPlumber right-stick mouse mapping
+docs/      root cause, build guide, kernel parameters, controller/input
+           findings, and the plan for capturing AYASpace's USB protocol
+config/    InputPlumber stick-to-mouse mapping
 systemd/   unit that reloads the InputPlumber profile at boot
-scripts/   measure-backlight.sh, measure-stick.py (diagnostics),
-           rebuild.sh, ip-load-profile.sh
+scripts/   measure-backlight.sh, measure-stick.py, sticklive.py,
+           stickcheck.py (diagnostics); ayaneo-ctl.py (vendor HID channel);
+           rebuild.sh, ip-load-profile.sh, winvm.sh
 ```
+
+### Towards a native Linux utility
+
+Some AYANEO features are already supported on Linux and need no work: the stick
+ring RGB (`ayaneo:rgb:joystick_rings`) and TDP/power (HHD, `platform_profile`).
+Missing are the **keyboard backlight** and the **gamepad settings** (deadzone,
+per-stick sensitivity, hall stick) — all of which travel over a vendor HID
+channel that is now fully identified. See
+**[docs/CAPTURE-PLAN.md](docs/CAPTURE-PLAN.md)** for how to capture the protocol
+in one Windows session, and `scripts/ayaneo-ctl.py`, which already finds the
+channel and sends reports — only the payloads are missing.
 
 ## Also in this repo: controller / right-stick fixes
 

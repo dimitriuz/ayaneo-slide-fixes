@@ -125,5 +125,5 @@ tshark -r dz.pcap -Y 'usb.transfer_type == 2' -T fields \
 
 and the Linux implementation is then a short `HIDIOCSFEATURE` write to
 `/dev/hidraw*` on the interface with Usage Page 0xFF00 - see
-`scripts/ayaneo-deadzone.py` in this repo, which already has everything except
+`scripts/ayaneo-ctl.py` in this repo, which already has everything except
 the payload.
