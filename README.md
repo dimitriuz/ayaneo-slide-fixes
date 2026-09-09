@@ -155,9 +155,28 @@ own `amd-staging-drm-next`. No newer, test, dev or beta kernel fixes it.
 
 ```
 patches/   the two kernel patches (git am format)
-docs/      root cause, build guide, kernel parameters
-scripts/   measure-backlight.sh (diagnostics), rebuild.sh (CachyOS rebuild helper)
+docs/      root cause, build guide, kernel parameters, controller/input findings
+config/    InputPlumber right-stick mouse mapping
+systemd/   unit that reloads the InputPlumber profile at boot
+scripts/   measure-backlight.sh, measure-stick.py (diagnostics),
+           rebuild.sh, ip-load-profile.sh
 ```
+
+## Also in this repo: controller / right-stick fixes
+
+Separate from the backlight, three input issues on the same device — see
+**[docs/INPUT-CONTROLLER.md](docs/INPUT-CONTROLLER.md)**:
+
+1. **Handheld Daemon crash-looping every 3 s** (fixable) — HHD and InputPlumber both
+   try to manage the gamepad; InputPlumber wins the exclusive grab and HHD retries
+   forever with `EBUSY`.
+2. **Right-stick pointer far too fast, and KDE's slider does nothing** (fixable) —
+   the motion comes from Steam's Desktop Layout injected via XTEST, which bypasses
+   libinput acceleration. Fixed by driving InputPlumber's own `mouse` target instead,
+   which exposes a `speed_pps` knob.
+3. **Right-stick deadzone far too wide** (**not** fixable) — the pad reports nothing
+   below ~50% of electrical range at steady state, with a quarter of mechanical travel
+   already reading 77% FS. That is AYANEO firmware, upstream of the kernel.
 
 ## License
 

@@ -1,0 +1,12 @@
+[Unit]
+Description=Load AYANEO SLIDE right-stick mouse profile into InputPlumber
+After=inputplumber.service
+Wants=inputplumber.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/ip-load-profile.sh
+
+[Install]
+WantedBy=multi-user.target
