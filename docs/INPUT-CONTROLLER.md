@@ -10,7 +10,7 @@ workaround** — worth knowing which is which before spending time on it.
 |---|---|---|
 | 1 | Handheld Daemon crash-looping every 3 s | **Fixed** — config |
 | 2 | Stick pointer far too fast, not tunable | **Fixed** — InputPlumber profile |
-| 3 | **Right** stick deadzone ~50% of full scale | **Not fixable** — faulty stick; use the **left** stick as the pointer |
+| 3 | **Both** sticks have a large deadzone (L 15-25%, R 30-50%) | **Root cause found, not yet fixed** — a stored setting only AYASpace can write; use the **left** stick meanwhile |
 
 ---
 
@@ -205,7 +205,7 @@ low end Steam never reached. To have only one, disable the desktop layout in
 
 ---
 
-## 3. The right stick's deadzone — a hardware fault
+## 3. The stick deadzones — stored configuration, not (only) worn hardware
 
 ### Symptom
 
@@ -432,6 +432,70 @@ That is section 2 above, and it is why the shipped config maps `LeftStick`.
   *does* report behave proportionally, but the dead mechanical travel remains dead.
 
 ---
+
+### It is a stored setting, and only AYASpace can write it
+
+Measured thresholds - the deflection at which motion *starts*, per direction:
+
+| | horizontal | vertical |
+|---|---|---|
+| **RIGHT** | -30% ... +50% | -40% ... +30% |
+| **LEFT**  | -15% ... +15% | -15% ... +25% |
+
+Two conclusions follow:
+
+* **Both** sticks are affected. A 15-25% deadzone on the left is still very large
+  (ZhiXu-based pads typically ship at 8/100). So this is not one dead sensor.
+* **All four axes are asymmetric**, each with a different offset. Four independently
+  worn sensors would be a remarkable coincidence; bad stored calibration would not.
+
+This corrects an earlier conclusion in this document's history that the right stick was
+simply faulty silicon. It is more likely miscalibration affecting both sticks, worse on
+the right.
+
+**AYASpace confirms the setting exists.** Under
+`Assistant -> EVO -> Master Controller -> Joystick` it exposes a deadzone on/off toggle
+and separate left/right sensitivity, and under
+`Assistant -> EVO -> Configure AYANEO -> Joystick/Button Correction` a correction
+routine for a shifted centre. So the deadzone is a per-stick, writable value.
+
+**And a controller firmware reflash does not clear it** (see above). Taken together,
+the setting must live in storage that firmware updates deliberately preserve - which is
+normal design, since you do not want an update to wipe per-unit factory calibration.
+
+### Running AYASpace in a VM: works for inspection, cannot apply
+
+Worth documenting because it is the obvious thing to try and it *half* works.
+
+[`scripts/winvm.sh`](../scripts/winvm.sh) builds a Windows 11 guest with QEMU/KVM:
+swtpm for the TPM 2.0 requirement, OVMF, the controller passed through by vid:pid, an
+optional Logitech receiver for keyboard/touchpad, and **SMBIOS spoofed as
+`AYANEO / SLIDE`** so AYASpace does not reject the machine. Nothing is repartitioned;
+the guest is a qcow2 file.
+
+Result: AYASpace installs, recognises the machine and shows the joystick pages - but
+**every write fails with "check connection"**, and all live values (battery, TDP, fan)
+are dead. AYASpace reaches the hardware through the **EC** via its own kernel driver,
+and a VM has no EC. Passing the gamepad through gives it the pad, not the EC.
+
+That also explains the write path: if the deadzone is written **EC -> controller MCU**,
+it is stored somewhere a controller firmware flash does not erase. Consistent with
+everything observed.
+
+**So the remaining route is real hardware.** Windows To Go on an external SSD gives a
+genuine EC without touching the internal disk - and the VM is still useful for building
+that drive, since Rufus can write Windows To Go from inside the guest.
+
+Gotchas found while doing this, in case you repeat it:
+
+* `oobe\bypassnro` was **removed in Windows 11 24H2+**. On 24H2/25H2 use
+  `start ms-cxh:localonly` from a Shift+F10 prompt, or launch the VM with no NIC at all
+  (`NONET=1`) so OOBE cannot demand a Microsoft account.
+* The emulated `usb-tablet` pointer is unreliable in Windows; passing a real USB
+  keyboard/mouse receiver through is far less painful. Note the **host loses that device**
+  while the VM runs, so keep another input method available.
+* Boot the ISO only until Windows is installed. Leaving the CD ahead of the disk in the
+  boot order restarts Setup instead of resuming OOBE.
 
 ## Diagnostic methodology
 
