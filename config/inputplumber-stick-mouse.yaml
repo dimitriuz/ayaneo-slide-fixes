@@ -1,0 +1,47 @@
+# Append these mappings to a profile produced by:
+#     inputplumber device 0 profile dump
+#
+# Start from a dump rather than writing a profile from scratch, so the device's
+# existing mappings survive - on the AYANEO SLIDE the stick-dial bindings for
+# brightness and volume live in the Default profile.
+#
+# WHY THE LEFT STICK: on this device the RIGHT stick has a ~50% hardware deadzone
+# (see docs/INPUT-CONTROLLER.md section 3) and cannot produce slow pointer motion.
+# The LEFT stick reports small deflections normally, so it gives real fine control.
+# If your right stick is healthy, map whichever you prefer.
+#
+# The gamepad target is listed FIRST in target_events on purpose: without it the
+# mapping replaces the stick's normal gamepad function and you lose stick input in
+# games. Listing both sends the axis to both destinations.
+#
+# speed_pps defaults to 800. Reload with:
+#     inputplumber device 0 profile load <path>
+
+- name: Left Stick Mouse
+  source_event:
+    gamepad:
+      axis:
+        name: LeftStick
+  target_events:
+  - gamepad:                 # keep normal gamepad behaviour for games
+      axis:
+        name: LeftStick
+  - mouse:
+      motion:
+        speed_pps: 700
+
+# Optional. On a device with a faulty right stick this adds little, since the
+# deadzone means it cannot move the pointer slowly. Drop this block if two
+# pointer sticks is confusing.
+- name: Right Stick Mouse
+  source_event:
+    gamepad:
+      axis:
+        name: RightStick
+  target_events:
+  - gamepad:
+      axis:
+        name: RightStick
+  - mouse:
+      motion:
+        speed_pps: 350

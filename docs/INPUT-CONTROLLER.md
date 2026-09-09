@@ -1,16 +1,16 @@
-# Controller & right-stick-mouse findings
+# Controller & stick-as-mouse findings
 
-Second set of issues on the **AYANEO SLIDE** (CachyOS handheld image), unrelated to
-the [backlight fixes](../README.md).
+Input issues on the **AYANEO SLIDE** (CachyOS handheld image), unrelated to the
+[backlight fixes](../README.md).
 
-Three separate things were found. **Two are fixable, one is not** — and it is worth
-knowing which is which before you spend time on it.
+Three separate things. **Two are fixable, one is a hardware fault with a good
+workaround** — worth knowing which is which before spending time on it.
 
-| # | Issue | Fixable? |
+| # | Issue | Outcome |
 |---|---|---|
-| 1 | Handheld Daemon crash-looping every 3 s | **Yes** — config |
-| 2 | Right-stick pointer far too fast, not tunable | **Yes** — InputPlumber profile |
-| 3 | Right-stick deadzone far too wide | **No** — controller firmware |
+| 1 | Handheld Daemon crash-looping every 3 s | **Fixed** — config |
+| 2 | Stick pointer far too fast, not tunable | **Fixed** — InputPlumber profile |
+| 3 | **Right** stick deadzone ~50% of full scale | **Not fixable** — faulty stick; use the **left** stick as the pointer |
 
 ---
 
@@ -18,21 +18,20 @@ knowing which is which before you spend time on it.
 
 ### Symptom
 
-Nothing visible, but `/etc/hhd/log/hhd.log` fills up forever:
+Nothing visible, but `/etc/hhd/log/hhd.log` grows forever:
 
 ```
-ERROR  Received the following error:
-       <class 'OSError'>: [Errno 16] Device or resource busy
+ERROR  <class 'OSError'>: [Errno 16] Device or resource busy
 ERROR  Assuming controllers disconnected, restarting after 3s.
 INFO   Launching emulated controller.
 ```
 
-Since boot, every three seconds. Wasted CPU and log churn.
+Every three seconds since boot.
 
 ### Cause
 
 CachyOS's handheld image ships **both** `cachyos-handheld` (HHD) and
-`inputplumber`, and both try to manage the gamepad. Confirm with:
+`inputplumber`, and both try to manage the gamepad:
 
 ```bash
 sudo fuser -v /dev/input/event6        # your gamepad's event node
@@ -46,7 +45,7 @@ open the device and retries forever.
 ### Fix
 
 Pause **only** HHD's controller emulation, keeping its TDP, RGB, IMU and PPD features
-(which do work). Edit `/etc/hhd/state.yml`:
+(those work fine). In `/etc/hhd/state.yml`:
 
 ```yaml
 controllers:
@@ -54,8 +53,6 @@ controllers:
     controller_mode:
       mode: disabled        # was: default
 ```
-
-Then:
 
 ```bash
 sudo systemctl restart hhd_local@$(whoami).service
@@ -66,108 +63,107 @@ sudo systemctl restart hhd_local@$(whoami).service
 ```bash
 sudo tail -20 /etc/hhd/log/hhd.log | grep -c 'Launching emulated controller'   # 0
 sudo tail -20 /etc/hhd/log/hhd.log | grep -c 'Device or resource busy'         # 0
-sudo fuser -v /dev/input/event6      # inputplumber only, no hhd
+sudo fuser -v /dev/input/event6      # inputplumber only
 ```
 
-HHD should still be `active`, and still logging TDP/RGB work.
+HHD stays `active` and keeps logging TDP/RGB work.
 
-> Choosing the other way round (let HHD own the pad, disable InputPlumber) is also
-> valid, but InputPlumber is what provides the `deck-uhid` Steam Deck controller
-> emulation that Steam expects on this image, so it is the less disruptive owner.
+> Letting HHD own the pad and disabling InputPlumber instead is also valid, but
+> InputPlumber provides the `deck-uhid` Steam Deck controller emulation that Steam
+> expects on this image, so it is the less disruptive owner.
 
 ---
 
-## 2. Right-stick pointer speed
+## 2. Stick-as-mouse pointer speed
 
 ### Symptom
 
-Right stick moves the mouse, but far too fast, and KDE's pointer-speed slider barely
-helps even at its minimum.
+A stick moves the mouse pointer, far too fast, and KDE's pointer-speed slider barely
+helps even at minimum.
 
 ### Why KDE can't fix it
 
-The pointer motion does **not** come from InputPlumber or HHD by default. The chain is:
+By default the pointer motion does **not** come from InputPlumber or HHD. The chain is:
 
 ```
 physical pad (evdev, xpad)
-  -> InputPlumber  -> "deck-uhid" target = Valve Steam Deck Controller (hidraw)
-    -> Steam       -> Desktop Layout, right stick = joystick_mouse
+  -> InputPlumber -> "deck-uhid" target = Valve Steam Deck Controller (hidraw)
+    -> Steam      -> Desktop Layout, right stick = joystick_mouse
       -> XTEST / XWayland pointer injection
 ```
 
-Confirm Steam is the one doing it:
+Confirm Steam is doing it:
 
 ```bash
-sudo fuser -v /dev/hidraw*      # steam holds the "Generic Steam Controller" node
+sudo fuser -v /dev/hidraw*      # steam holds the Steam Controller node
 pgrep -a Xwayland
 ```
 
 Because Steam injects via XTEST rather than emitting evdev events, libinput's pointer
-acceleration — which is what KDE's slider configures — is largely bypassed. You can
-see this: monitoring every `/dev/input/event*` while moving the stick yields **zero**
+acceleration — which is what KDE's slider configures — is bypassed. The tell is that
+monitoring every `/dev/input/event*` while moving the stick yields **zero**
 `REL_X`/`REL_Y` events.
 
-Steam's own Desktop Layout is also not much help: its right-stick group carries no
-sensitivity or deadzone values at all, so it runs on Steam's internal defaults.
+Steam's own Desktop Layout offers little either: its right-stick group carries no
+sensitivity or deadzone values, so it runs on Steam's internal defaults.
 
-```bash
-grep -c 'deadzone_inner_radius' ~/.local/share/Steam/controller_base/desktop_neptune.vdf
-# the two hits belong to the LEFT stick's joystick_move groups, not the right stick
-```
+### Fix — drive the pointer from InputPlumber
 
-### Fix — drive the pointer from InputPlumber instead
-
-InputPlumber already creates an unused `mouse` target. Mapping the right stick to it
-gives a `speed_pps` knob and genuine 1-pixel proportional steps.
+InputPlumber already creates an unused `mouse` target. Mapping a stick to it gives a
+`speed_pps` knob and genuine 1-pixel proportional steps.
 
 ```bash
 inputplumber devices list          # note the composite device id (usually 0)
 inputplumber device 0 targets list # should list a "mouse" target
 ```
 
-Start from your **current** profile so you keep existing mappings (the dial-to-
+Start from your **current** profile so existing mappings survive (the dial-to-
 brightness/volume bindings on this device live there):
 
 ```bash
 sudo mkdir -p /etc/inputplumber/profiles
-inputplumber device 0 profile dump | sudo tee /etc/inputplumber/profiles/rightstick-mouse.yaml >/dev/null
-sudo sed -i 's/^name: Default$/name: Default + RightStick Mouse/' \
-    /etc/inputplumber/profiles/rightstick-mouse.yaml
+inputplumber device 0 profile dump | sudo tee /etc/inputplumber/profiles/stick-mouse.yaml >/dev/null
+sudo sed -i 's/^name: Default$/name: Default + Stick Mouse/' \
+    /etc/inputplumber/profiles/stick-mouse.yaml
 ```
 
-Append the mapping (also in [`config/inputplumber-rightstick-mouse.yaml`](../config/inputplumber-rightstick-mouse.yaml)):
+Append the mappings from
+[`config/inputplumber-stick-mouse.yaml`](../config/inputplumber-stick-mouse.yaml):
 
 ```yaml
-- name: Right Stick Mouse
+- name: Left Stick Mouse
   source_event:
     gamepad:
       axis:
-        name: RightStick
-        deadzone: 0.05
+        name: LeftStick
   target_events:
+  - gamepad:                 # keep normal gamepad behaviour for games
+      axis:
+        name: LeftStick
   - mouse:
       motion:
-        speed_pps: 350
+        speed_pps: 700
 ```
 
-Load it:
-
 ```bash
-inputplumber device 0 profile load /etc/inputplumber/profiles/rightstick-mouse.yaml
+inputplumber device 0 profile load /etc/inputplumber/profiles/stick-mouse.yaml
 inputplumber device 0 profile name
 ```
 
-`speed_pps` defaults to 800; 350 is noticeably slower. Tune to taste — changes apply
-on reload, no reboot needed.
+**Two things that are easy to get wrong:**
 
-> `deadzone` here has no effect on motion mappings. The schema documents it as
-> *"When this deadzone threshold is crossed, this input is considered 'pressed'"* —
-> i.e. it is for axis→**button** conversion. It is harmless to leave in.
+* **List the gamepad target too.** Without the `gamepad:` entry the mapping *replaces*
+  the stick's normal function and you lose stick input in games. Listing both
+  destinations sends the axis to each.
+* **`deadzone` does nothing here.** The schema documents it as *"when this deadzone
+  threshold is crossed, this input is considered 'pressed'"* — it is for
+  axis→**button** conversion, not motion. Harmless to leave in, useless for this.
+
+`speed_pps` defaults to 800; changes apply on reload, no reboot.
 
 ### Make it survive a reboot
 
-A loaded profile is in-memory only, and is lost on `systemctl restart inputplumber`.
-Install the loader and unit from this repo:
+A loaded profile is in-memory only, and is lost on `systemctl restart inputplumber`:
 
 ```bash
 sudo install -m755 scripts/ip-load-profile.sh /usr/local/bin/ip-load-profile.sh
@@ -177,131 +173,305 @@ sudo systemctl enable --now inputplumber-profile.service
 ```
 
 The script retries for up to 60 s because InputPlumber's device detection is
-asynchronous — a plain `After=inputplumber.service` alone races and fails.
+asynchronous — a bare `After=inputplumber.service` races and fails.
 
 ### Verify
 
 ```bash
-systemctl is-active inputplumber-profile.service     # active
-inputplumber device 0 profile name                   # Default + RightStick Mouse
-sudo python3 scripts/measure-stick.py --rel 20       # move the stick; expect REL steps of 1,2,3...
+systemctl is-active inputplumber-profile.service   # active
+inputplumber device 0 profile name                 # Default + Stick Mouse
+sudo ./scripts/stickcheck.py                       # live; Ctrl+C to finish
 ```
 
-Fine-grained output looks like this — small step sizes are the point:
+`stickcheck` reads the emulated gamepad and the mouse target simultaneously, so you
+can confirm a stick feeds **both** — i.e. that you did not steal the sticks from games:
 
 ```
-REL_X: distinct step sizes=6  smallest steps=[(1,100),(2,108),(3,81),(4,75),(5,69),(6,19)]
+GAMEPAD  L( 12345,  -234) R(     0,     0) ev=1204  |  MOUSE  dx=   3 dy=  -1 ev=890
+```
+
+Fine-grained pointer output looks like small step sizes, which is the whole point:
+
+```
+REL_X: distinct step sizes=6  smallest=[(1,100),(2,108),(3,81),(4,75),(5,69),(6,19)]
 ```
 
 ### Note on Steam
 
 Steam's Desktop Layout keeps injecting its own motion at large deflections, so the two
-add up. In practice they are complementary: InputPlumber supplies the slow, precise
-low end that Steam never reached. If you would rather have only one, disable Steam's
-desktop layout in *Steam → Settings → Controller*.
+add up. In practice they are complementary — InputPlumber supplies the slow, precise
+low end Steam never reached. To have only one, disable the desktop layout in
+*Steam → Settings → Controller*.
 
 ---
 
-## 3. Right-stick deadzone — NOT fixable in software
+## 3. The right stick's deadzone — a hardware fault
 
 ### Symptom
 
-The stick must be pushed a long way before the pointer moves at all, and motion is
-asymmetric (right reaches full speed sooner than left).
+The **right** stick must be pushed roughly halfway before the pointer moves at all,
+and then it moves fast. Motion is asymmetric: right reaches full speed sooner than
+left.
 
-### The measurement that settles it
+### Measure it properly: hold, don't sweep
 
-Read the **raw kernel axis** with InputPlumber not managing the device, and hold
-positions steady. Sweeping is misleading: fast transits produce transient low values
-that make the hardware look better than it is. (This cost us a wrong conclusion —
-initially the deadzone was blamed on InputPlumber.)
+Sweeping is misleading — fast transits produce transient low values that make the
+hardware look better than it is. **This cost us a wrong conclusion:** sweep captures
+initially made it look as though InputPlumber was discarding everything below 50%, and
+only steady-state holds showed the pad itself does it.
+
+Use the live tool, which only counts values you sustain for ≥0.3 s and ignores centre
+noise below 512:
 
 ```bash
-inputplumber device 0 stop            # release the exclusive grab
-sudo python3 scripts/measure-stick.py --abs 30 /dev/input/event6
-# ...hold the stick at a quarter, then half, then full deflection...
-sudo systemctl restart inputplumber   # restore
+sudo ./scripts/sticklive.py     # releases InputPlumber, restores it on Ctrl+C
 ```
 
-Pass the **physical** pad's event node explicitly. Auto-detection will happily pick
-the *emulated* one (`Microsoft X-Box 360 pad 0`), which tells you nothing about the
-hardware. Identify the real one with:
+Or a one-shot capture:
+
+```bash
+inputplumber device 0 stop
+sudo python3 scripts/measure-stick.py --abs 30 /dev/input/event6
+sudo systemctl restart inputplumber
+```
+
+Pass the **physical** pad's node explicitly. Auto-detection will happily pick the
+*emulated* one (`Microsoft X-Box 360 pad 0`), which tells you nothing about the
+hardware:
 
 ```bash
 grep -l 'X-Box 360 pad$' /sys/class/input/event*/device/name
-ls -l /dev/input/by-path/ | grep joystick
 ```
 
-Measured on this device (`ABS_RX`, full scale 32767):
+### What we measured
+
+Steady-state `ABS_RX`, full scale 32767:
 
 ```
 held ~quarter travel   ->  25344   ( 77.3% FS)
 held ~half travel      ->  28160   ( 85.9% FS)
 held full              ->  32767   (100.0% FS)
-on release             ->  25088 -> 0     (76.6% straight to zero)
+on release             ->  25088 -> 0        (76.6% straight to zero)
 ```
 
-Lowest non-zero magnitude ever observed at steady state: **16896 ≈ 51.6% of FS**.
+Lowest non-zero magnitude at steady state: **16896 ≈ 51.6% FS**. So the pad reports
+nothing below about half its electrical range, and a quarter of mechanical travel
+already reads 77%. Every value is a multiple of 256 — the pad is 8-bit in practice —
+and the range is asymmetric, **−28160 … +32767**, i.e. the electrical centre sits
+offset toward the right. That asymmetry is exactly why right feels faster than left.
 
-So the pad reports **nothing** below roughly half its electrical range, and a quarter
-of mechanical travel already reads 77%. The axis is also 8-bit in practice — every
-value is a multiple of 256 — and asymmetric, spanning **−28160 … +32767**, i.e. the
-electrical centre sits offset toward the right. That asymmetry is exactly why right
-feels faster than left.
-
-The evdev axis itself declares almost no deadzone, so this is not a kernel hint:
+This is not a kernel hint. The evdev axis declares almost no deadzone:
 
 ```
 ABS_RX   min -32768   max 32767   fuzz 16   flat 128     (flat = 0.4% of range)
 ```
 
-`xpad` adds no deadzone either. The device presents as `045e:028e Microsoft Corp.
-Xbox360 Controller`, so the dead band and the compressed curve are in **AYANEO's
-firmware**, upstream of the kernel.
+`xpad` adds none either.
 
-### Why no software fix exists
+### The decisive test: compare the two sticks
 
-There is no data below ~50% to rescale, expand or curve. Anti-deadzone, response
-curves and `quadratic_scaling` can only redistribute values that arrive; they cannot
-invent the missing half. Anything claiming otherwise is just amplifying the jump.
+Same firmware, same driver, same mapping, same `speed_pps` — the only variable is
+which stick. On this device the **left stick gives fine control at small deflections
+and the right cannot**. That rules out a firmware deadzone *policy* and points at the
+right stick specifically.
 
-### What might actually help
+**If you take one thing from this document, it is to test both sticks before blaming
+software.** It is a two-minute comparison that invalidates whole classes of theory.
 
-- **BIOS** — check for stick calibration / deadzone options in setup.
-- **AYASpace under Windows** — on some AYANEO models its stick calibration is written
-  to firmware and therefore persists into Linux.
-- **Controller mode switch** — InputPlumber's device config for the SLIDE also lists a
-  `Nintendo Co., Ltd. Pro Controller` source, so the hardware can present as a Switch
-  Pro Controller. A different firmware mode may use a different curve.
-- **Suspect the hardware** — a ~50% dead band with an offset centre is extreme. Worth
-  comparing against another unit, or testing the stick under Windows, before assuming
-  it is normal for the model.
+### What it is not
+
+Ruled out with evidence, so you do not have to repeat it:
+
+| Hypothesis | Evidence against |
+|---|---|
+| InputPlumber applies the deadzone | Steady-state raw evdev shows the same ~50% floor with InputPlumber stopped |
+| Steam applies it | Steam's deadzone slider at minimum changes nothing; Steam is downstream |
+| KDE pointer settings | `PointerAcceleration=-1.000` already minimum, and XTEST bypasses libinput |
+| Kernel/`xpad` deadzone | `flat = 128` = 0.4% of range |
+| A BIOS setting | See below — nothing in the firmware image |
+| Firmware deadzone policy | The **left** stick on the same device is fine |
+
+### The BIOS dive — dead end
+
+The controller is **not** the EC and **not** in the BIOS. Its USB identity:
+
+```
+idVendor/idProduct : 045e:028e   (spoofing Microsoft Xbox360)
+iManufacturer      : ZhiXu       <- the real vendor
+iProduct           : Controller
+bcdDevice          : 1.10        <- its own firmware version
+bNumInterfaces     : 1           (vendor-specific class 255)
+```
+
+A dedicated **ZhiXu MCU** on an internal USB port with its own firmware. Searching the
+32 MB AMI Aptio image (`AS01-BIOS-20240606`, raw plus the four LZMA volumes,
+~9.5 MB decompressed) found:
+
+```
+"ZhiXu" anywhere:                        0 hits
+045e:028e VID/PID byte pattern:          0 hits
+stick / joystick / deadzone Setup strings: 0 hits
+```
+
+The EC-related Setup strings that do exist (`EC FW Version`, `EC FIRMWARE Update`,
+eSPI routing, UCSI) are unrelated. The flash script uses `/p /b /n /k /x` with **no
+`/E`** EC block, consistent with the controller firmware living elsewhere.
+
+*Caveat:* only the LZMA volumes were decompressed. UEFI also uses Tiano/EFI
+compression, so something could in principle hide in an unpacked section — but zero
+hits for the MCU's own vendor name *and* the VID/PID it advertises makes that unlikely.
+
+### The official calibration — registers, but did not help
+
+AYANEO documents a hardware calibration ([official KB][kb]):
+
+1. Sticks at rest
+2. Hold the **⧉ View button (lower left)** + **all four ABXY buttons** — five at once
+3. Hold until the device **vibrates twice**
+4. Within ~10 s, **rotate both sticks 2–3 full circles** and **fully press/release both
+   triggers ~3×**
+5. It vibrates again when done
+
+Two gotchas found the hard way:
+
+* **There is no vibration feedback under Linux.** No device reports any force-feedback
+  capability (`EVIOCGBIT(EV_FF)` is empty on every node), so the confirmation cue never
+  fires. Absence of vibration does **not** mean the combo failed — judge by measurement.
+* **Verify the combo registers.** All five buttons must be seen simultaneously:
+  ```
+  held=['A (South)', 'B (East)', 'SELECT/View', 'X (North)', 'Y (West)']
+  ```
+  Note that triggers are analog (`ABS_Z`/`ABS_RZ`), so they never appear in a button
+  monitor at all.
+
+On this device the combo registered correctly and the deadzone did not improve —
+consistent with a degraded sensor rather than a lost calibration, since calibration can
+correct a centre offset but not a dead sensor region.
+
+### Not applicable: x20ctl
+
+[x20ctl][x20] reverse-engineers the configuration protocol of ShenZhen ZhiXu chips —
+the same vendor — and exposes **inner/outer deadzone plus response curves on a 0–100
+scale**, shipping at **8/100** on the EasySMX X20. Tempting, but it does not apply:
+
+* it is **Bluetooth LE GATT** (service `d7f010e0-…`, advertising as `Xpert2`), and this
+  controller is internal USB with no BLE peripheral;
+* its README explicitly warns **"Don't identify a pad by USB VID/PID"** — `045E:028E` is
+  a generic clone ID, so the matching ID means nothing;
+* no AYANEO devices are supported, and even EasySMX's own X05 was found incompatible.
+
+It is still useful as corroboration: these chips store a deadzone in flash on a 0–100
+scale, typically single digits. Ours behaves like ~50 — six times out of spec, which
+reads as a fault, not a design choice.
+
+### Controller firmware — the one remaining real avenue
+
+The stick behaviour may be a **stored setting** rather than a dead sensor: AYASpace
+under Windows can write a deadzone into the controller, and that would persist into
+Linux because the MCU applies it autonomously. Re-flashing the controller firmware
+should reset such a setting to defaults.
+
+AYANEO ships a controller firmware for this board (`AS01_20231127_V02.bin`, 20 KB) and
+the update procedure is **OS-agnostic** — no Windows needed:
+
+```
+1. Turn off for more than 1 minute.
+2. Hold down the left joystick to turn on.
+3. A USB disk named AYANEO appears. Copy the firmware .bin onto it and the
+   controller updates automatically.
+```
+
+Holding the left stick at power-on puts the MCU into a **USB mass-storage
+bootloader**, so on Linux you simply mount the device and copy the file:
+
+```bash
+# after booting with the left stick held:
+lsblk -o NAME,LABEL,SIZE,MOUNTPOINT
+sudo dmesg | tail -20            # look for a small removable disk labelled AYANEO
+```
+
+**Check for the bootloader disk before flashing anything** — entering that mode and
+rebooting normally is harmless, and confirms the procedure works on your unit.
+
+Two honest caveats:
+
+* The image is **encrypted or compressed** (entropy 7.99 bits/byte, no strings, no
+  `AS01` reference inside), so it cannot be inspected or edited. You are trusting the
+  filename and the official source.
+* **Version comparison is not possible.** The device reports `bcdDevice 1.10`, the file
+  is named `V02` and dated 2023-11-27 — older than the 2024-06 BIOS. There is no way to
+  tell from the outside whether this is an upgrade or a downgrade, so flashing carries
+  a real risk of regressing other controller behaviour.
+
+### EC firmware — not relevant
+
+`SLIDE_EC_20240628` (ITE `IT557xE`, `ITE_Eii_00_AS01_A_V02001B.T6.bin`, 128 KB) flashes
+from a UEFI shell off a FAT32 stick via `ifu.efi` / `Startup.nsh` — also Windows-free.
+But its own readme states its purpose: *"Realize bypass power supply function"* (battery
+bypass charging). Nothing to do with the sticks, so there is no reason to take that
+risk for this problem.
+
+### The workaround that actually works
+
+**Map the left stick to the mouse instead.** It reports small deflections normally, so
+you get real proportional control — slow when barely deflected, faster as you push.
+That is section 2 above, and it is why the shipped config maps `LeftStick`.
+
+### If you want it properly fixed
+
+* **Warranty / support.** The evidence here is unusually strong for a ticket: raw kernel
+  axis values showing the right stick reports nothing below ~50% at steady state while
+  the left behaves normally, on a device where the documented calibration registers but
+  does not help.
+* **AYASpace under Windows** exposes a deadzone setting and a joystick correction
+  function ([AYANEO on deadzone and Hall sticks][hall], [AYASpace manual][aya]).
+* **Controller firmware** would come from AYANEO as a separate MCU updater, not a BIOS.
+  Quote `ZhiXu`, `bcdDevice 1.10`.
+* **Software anti-deadzone** cannot recover the missing range. Rescaling the usable
+  50–100% band onto 0–100% (`out = sign(x)·(|x|−16384)/16384·32767`) makes the band that
+  *does* report behave proportionally, but the dead mechanical travel remains dead.
 
 ---
 
 ## Diagnostic methodology
 
-Worth reusing on any handheld, and it is where the real conclusions came from.
+Reusable on any handheld, and where the real conclusions came from.
 
-**Find who actually generates pointer motion.** Monitor every `/dev/input/event*` at
-once. If a stick moves the pointer but no device emits `REL_X`/`REL_Y`, motion is
-being injected above evdev (XTEST, or a Wayland virtual-pointer protocol) — look at
-what holds `/dev/hidraw*` instead.
-
-**Include a control in every capture.** Press a keyboard key during the run. If the
-keyboard shows up and the stick does not, your reader works and the device is simply
-grabbed — rather than your script being broken. This distinction wasted a cycle here.
-
-**Self-timestamp subjective events.** To capture "the value at the moment the pointer
-started moving", have the tester press a gamepad button at that instant. The press
-lands in the same report stream, so no clock correlation is needed.
+**Test both sticks first.** The cheapest test with the highest information content. A
+difference between them eliminates every software-policy explanation at once.
 
 **Hold, don't sweep.** Steady-state values are the truth. Sweeps sample transients and
-will overstate what the hardware reports near centre.
+overstate what the hardware reports near centre — this produced a wrong conclusion here.
 
-**Compare the same input at two layers.** Reading raw evdev with the manager stopped,
-versus the emulated device's HID reports, is what localises a transformation to a
-specific component.
+**Beware your own "steady" metric.** An axis resting at ±1 will register as a
+"sustained non-zero value" and look like fine control. Ignore magnitudes below a noise
+floor (512 works on a 16-bit axis).
+
+**Find who actually generates pointer motion.** Monitor every `/dev/input/event*` at
+once. If a stick moves the pointer but nothing emits `REL_X`/`REL_Y`, motion is injected
+above evdev (XTEST, or a Wayland virtual-pointer protocol) — look at what holds
+`/dev/hidraw*` instead.
+
+**Include a control in every capture.** Press a keyboard key during the run. If the
+keyboard appears and the stick does not, your reader works and the device is simply
+grabbed, rather than your script being broken.
+
+**Self-timestamp subjective events.** To capture "the value at the moment the pointer
+started moving", have the tester press a gamepad button at that instant — the press
+lands in the same report stream, so no clock correlation is needed.
+
+**Give the tester a live readout, not a timed capture.** Fixed-duration background
+captures make the person race a clock they cannot see, and produce empty runs. A live
+tool they stop with Ctrl+C is strictly better.
+
+**Compare the same input at two layers.** Reading raw evdev with the manager stopped
+versus the emulated device's HID reports is what localises a transformation to a
+component.
 
 **Re-glob devices during long captures.** Daemons tear down and recreate virtual
 devices, so a device list captured once at startup can go stale mid-run.
+
+[kb]: https://help.ayaneo.com/doku.php?id=ayaneo:common_fault_solutions:what_should_i_do_if_the_joystick_and_ltrt_malfunction_or_drift
+[hall]: https://www.ayaneo.com/article/263
+[aya]: https://www.ayaneo.com/article/262
+[x20]: https://github.com/AmjadAAYD/x20ctl
