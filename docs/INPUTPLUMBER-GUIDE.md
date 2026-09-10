@@ -183,3 +183,138 @@ restart. For persistence:
   `systemctl start inputplumber` will race and find no device. Retry in a loop.
 * Event node numbers change when devices re-enumerate. Match by **name** or via
   `/dev/input/by-path/`, never a hardcoded `eventN`.
+
+---
+
+# Axis handling: what InputPlumber can and cannot do
+
+Verified against InputPlumber **0.79.4** source, and measured on an AYANEO
+SLIDE whose left stick has a mechanical centring fault. Useful if you are
+trying to tame a stick that does not return to zero.
+
+## `deadzone` in a profile only makes buttons
+
+`deadzone` on an axis or trigger appears in exactly two places in the source,
+`translate_axis_to_button()` and `translate_trigger_to_button()`:
+
+```rust
+// src/input/event/value.rs:943
+let threshold = axis.deadzone.unwrap_or(0.3);
+```
+
+Both are axis→**button** translations. Nothing in any axis→axis path reads it.
+The schema description is literally accurate — *"When this deadzone threshold
+is crossed, this input is considered 'pressed'"* — but it is easy to read as a
+general stick deadzone. **It is not.** Putting `deadzone` on a stick that maps
+to another stick does nothing at all.
+
+## `quadratic_scaling` does work, and is undocumented
+
+`AxisCapability` carries three fields the JSON schema does not mention:
+
+| field | effect |
+|---|---|
+| `quadratic_scaling` | signed square of the normalised value |
+| `invert` | negates both components |
+| `deadzone` | axis→button threshold only (above) |
+
+`device_profile_v1.json` lists only `name`, `direction` and `deadzone` with
+`additionalProperties: false`, so a schema-aware editor will flag the other
+two as invalid. They deserialise fine — profile YAML maps onto the same
+`AxisCapability` struct as capability maps.
+
+It must go on the **target** axis, not the source:
+
+```yaml
+- name: Left Stick
+  source_event:
+    gamepad:
+      axis:
+        name: LeftStick
+  target_events:
+  - gamepad:
+      axis:
+        name: LeftStick
+        quadratic_scaling: true      # <- target side
+```
+
+The maths is `v * v.abs()` on the normalised value, so full deflection is
+preserved and small deflections are squared:
+
+| stick at | application sees |
+|---|---|
+| 100% | 100% |
+| 50% | 25% |
+| 14% | 2.0% |
+| 5% | 0.25% |
+
+That makes it a good fit for a stick with a **centring fault**: it collapses a
+resting offset toward zero without a hard cutoff and without losing range. On
+the SLIDE measured here it took a 15.7% direction-dependent hysteresis band
+down to ~2.0% as seen by applications. It also slows genuine fine movement, so
+it is a trade, not a free win.
+
+## The axis→mouse deadzone is hardcoded at 20%
+
+If you drive a `mouse` target from a stick, there is a fixed threshold you
+cannot configure:
+
+```rust
+// src/input/event/value.rs:713
+// Check to see if the value is below a given threshold to prevent
+// mouse movements for axes that don't recenter to 0.
+if value.abs() < 0.20 { x = Some(0.0); }
+```
+
+`MouseMotionCapability` exposes only `direction` and `speed_pps`. So the stick
+must travel 20% before the pointer moves at all, and then motion begins at
+`0.20 * speed_pps` — 160 px/s at the default 800. That is why a stick-as-mouse
+can feel simultaneously unresponsive and too fast, and no amount of profile
+work or hardware deadzone tuning changes it. `quadratic_scaling` does not help
+either: `Axis -> Mouse` routes through `translate_axis_to_mouse_motion()`,
+which never reads it.
+
+## Measuring any of this: the target may have no evdev node
+
+The default gamepad target on a Steam-oriented image is `deck-uhid`, a **UHID**
+device — `Generic Steam Controller`, `28DE:12F0`. It has **no
+`/dev/input/event*` node**: it speaks HID reports on `/dev/hidraw*`. Watching
+evdev for it shows nothing however far the sticks move.
+
+Two traps that cost real time here:
+
+* An evdev node named like the target (`Microsoft X-Box 360 pad 0`) may be
+  registered by InputPlumber as a **source**, not an output. Check
+  `busctl --system tree org.shadowblip.InputPlumber` — sources appear under
+  `devices/source/`, outputs under `devices/target/`.
+* `EVIOCGABS` on a uinput device is not a reliable window onto what has been
+  written to it. Read the event stream instead.
+
+Confirm what the target actually is:
+
+```bash
+journalctl -u inputplumber | grep 'Setting target devices' | tail -1
+busctl --system get-property org.shadowblip.InputPlumber \
+    /org/shadowblip/InputPlumber/CompositeDevice0 \
+    org.shadowblip.Input.CompositeDevice TargetDevices
+```
+
+[`scripts/stickverify.py`](../scripts/stickverify.py) handles all of this: it
+polls the physical pad with `EVIOCGABS` (which works despite InputPlumber's
+exclusive grab) and decodes the emulated pad's HID reports, then prints the
+physical→emulated ratio bucketed by deflection band.
+
+```
+sudo stickverify        # move both sticks fully, Ctrl+C
+```
+
+* ratio **~1.00 in every band** — linear passthrough
+* ratio **tracking the deflection** (1.0 at full, 0.5 at half) —
+  `quadratic_scaling` is in effect
+* ratio **0.00 below ~20%** on a stick driving a mouse — the hardcoded
+  threshold above
+
+Since the emulated pad here has no evdev node, this also explains why non-Steam
+games may not see the controller at all: there is no `js*` or `event*` device
+for them to find. Switching the target to `xb360` gives them a standard evdev
+pad — see [The target is a Steam Deck controller](#1-the-target-is-a-steam-deck-controller) above.

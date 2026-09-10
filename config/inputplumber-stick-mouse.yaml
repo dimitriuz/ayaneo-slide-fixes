@@ -1,38 +1,79 @@
-# Append these mappings to a profile produced by:
-#     inputplumber device 0 profile dump
-#
-# Start from a dump rather than writing a profile from scratch, so the device's
-# existing mappings survive - on the AYANEO SLIDE the stick-dial bindings for
-# brightness and volume live in the Default profile.
-#
-# WHY THE LEFT STICK: on this device the RIGHT stick has a ~50% hardware deadzone
-# (see docs/INPUT-CONTROLLER.md section 3) and cannot produce slow pointer motion.
-# The LEFT stick reports small deflections normally, so it gives real fine control.
-# If your right stick is healthy, map whichever you prefer.
-#
-# The gamepad target is listed FIRST in target_events on purpose: without it the
-# mapping replaces the stick's normal gamepad function and you lose stick input in
-# games. Listing both sends the axis to both destinations.
-#
-# speed_pps defaults to 800. Reload with:
-#     inputplumber device 0 profile load <path>
-
-- name: Left Stick Mouse
+version: 1
+kind: DeviceProfile
+name: Default + RightStick Mouse
+mapping:
+- name: LeftTop
+  source_event:
+    gamepad:
+      button: LeftTop
+  target_events:
+  - gamepad:
+      button: LeftPaddle1
+- name: RightTop
+  source_event:
+    gamepad:
+      button: RightTop
+  target_events:
+  - gamepad:
+      button: RightPaddle1
+- name: Keyboard
+  source_event:
+    gamepad:
+      button: Keyboard
+  target_events:
+  - gamepad:
+      button: Guide
+  - gamepad:
+      button: North
+- name: QuickAccess2
+  source_event:
+    gamepad:
+      button: QuickAccess2
+  target_events:
+  - gamepad:
+      button: Screenshot
+- name: Left Dial Counter-clockwise
+  source_event:
+    gamepad:
+      dial:
+        name: LeftStickDial
+        direction: counter-clockwise
+  target_events:
+  - keyboard: KeyVolumeDown
+- name: Left Dial Clockwise
+  source_event:
+    gamepad:
+      dial:
+        name: LeftStickDial
+        direction: clockwise
+  target_events:
+  - keyboard: KeyVolumeUp
+- name: Right Dial Counter-clockwise
+  source_event:
+    gamepad:
+      dial:
+        name: RightStickDial
+        direction: counter-clockwise
+  target_events:
+  - keyboard: KeyBrightnessDown
+- name: Right Dial Clockwise
+  source_event:
+    gamepad:
+      dial:
+        name: RightStickDial
+        direction: clockwise
+  target_events:
+  - keyboard: KeyBrightnessUp
+- name: Left Stick
   source_event:
     gamepad:
       axis:
         name: LeftStick
   target_events:
-  - gamepad:                 # keep normal gamepad behaviour for games
+  - gamepad:
       axis:
         name: LeftStick
-  - mouse:
-      motion:
-        speed_pps: 700
-
-# Optional. On a device with a faulty right stick this adds little, since the
-# deadzone means it cannot move the pointer slowly. Drop this block if two
-# pointer sticks is confusing.
+        quadratic_scaling: true
 - name: Right Stick Mouse
   source_event:
     gamepad:
@@ -44,4 +85,4 @@
         name: RightStick
   - mouse:
       motion:
-        speed_pps: 350
+        speed_pps: 800

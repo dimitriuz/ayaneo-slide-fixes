@@ -10,6 +10,7 @@ Three separate things, **all three now fixed from Linux**.
 | 1 | Handheld Daemon crash-looping every 3 s | **Fixed** — config |
 | 2 | Stick pointer far too fast, not tunable | **Fixed** — InputPlumber profile |
 | 3 | **Both** sticks have a large deadzone (L 15-25%, R 30-50%) | **Fixed** — `scripts/gulikit-ctl.py`, see [GAMEPAD-PROTOCOL.md](GAMEPAD-PROTOCOL.md) |
+| 4 | Left stick does not return to centre — 16% hysteresis | **Mitigated** — `quadratic_scaling`, see [INPUTPLUMBER-GUIDE.md](INPUTPLUMBER-GUIDE.md#axis-handling-what-inputplumber-can-and-cannot-do); the fault itself is mechanical |
 
 Issue 3 was a stored setting in the gamepad MCU, exactly as suspected, and for a
 long stretch of this investigation it looked like only AYASpace under Windows
