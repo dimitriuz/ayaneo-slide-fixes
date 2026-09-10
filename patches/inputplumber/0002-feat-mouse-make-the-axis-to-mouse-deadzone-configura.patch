@@ -1,0 +1,108 @@
+From a286433fdea0056d683ba656cdfe722c8f630c27 Mon Sep 17 00:00:00 2001
+From: dimitriuz <d.leshchenko@diagnocat.com>
+Date: Thu, 10 Sep 2026 17:15:31 +0200
+Subject: [PATCH 2/2] feat(mouse): make the axis-to-mouse deadzone configurable
+
+translate_axis_to_mouse_motion() gates pointer motion behind a hardcoded 20%
+threshold:
+
+    if value.abs() < 0.20 { x = Some(0.0); }
+
+MouseMotionCapability exposes only direction and speed_pps, so there is no way
+to change it. A stick driving a mouse target therefore cannot move the pointer
+at all below 20% deflection, and at 20% it starts at 0.20 * speed_pps -- 160
+px/s at the default. The result feels simultaneously unresponsive and too fast,
+and no other configuration reaches it: deadzone on an axis applies to
+axis->button translation only, and quadratic_scaling is never read on this path
+because Axis -> Mouse routes through this function rather than the axis->axis
+arm.
+
+The comment above the threshold explains why it exists -- "to prevent mouse
+movements for axes that don't recenter to 0" -- which is a per-device hardware
+property and so belongs in per-device configuration. Some handheld sticks rest
+several percent off centre and need it; a stick that centres cleanly does not,
+and pays for it with unusable fine control.
+
+Add an optional deadzone to MouseMotionCapability, defaulting to 0.20 so
+existing profiles behave exactly as before, and clamp it to 0.0 - 1.0. Document
+it in the hand-maintained device_profile_v1.json alongside speed_pps.
+
+    - name: Right Stick Mouse
+      source_event:
+        gamepad:
+          axis:
+            name: RightStick
+      target_events:
+      - mouse:
+          motion:
+            speed_pps: 800
+            deadzone: 0.02
+---
+ .../usr/share/inputplumber/schema/device_profile_v1.json | 5 +++++
+ src/config/capability_map.rs                             | 5 +++++
+ src/input/event/value.rs                                 | 9 +++++++--
+ 3 files changed, 17 insertions(+), 2 deletions(-)
+
+diff --git a/rootfs/usr/share/inputplumber/schema/device_profile_v1.json b/rootfs/usr/share/inputplumber/schema/device_profile_v1.json
+index 1db5df3..b235a8e 100644
+--- a/rootfs/usr/share/inputplumber/schema/device_profile_v1.json
++++ b/rootfs/usr/share/inputplumber/schema/device_profile_v1.json
+@@ -344,6 +344,11 @@
+           "type": "number",
+           "description": "Speed of the target motion event in pixels per second",
+           "default": 800
++        },
++        "deadzone": {
++          "type": "number",
++          "default": 0.2,
++          "description": "Optional deadzone from 0.0 - 1.0, below which the axis produces no pointer motion. Raise it for a stick that does not recentre to zero; lower it for fine pointer control."
+         }
+       }
+     },
+diff --git a/src/config/capability_map.rs b/src/config/capability_map.rs
+index e54a988..a5899c8 100644
+--- a/src/config/capability_map.rs
++++ b/src/config/capability_map.rs
+@@ -296,6 +296,11 @@ pub struct MouseMotionCapability {
+     pub direction: Option<String>,
+     #[serde(skip_serializing_if = "Option::is_none")]
+     pub speed_pps: Option<u64>,
++    /// Optional deadzone from 0.0 - 1.0, below which the axis produces no
++    /// pointer motion. Defaults to 0.2. Raise it for a stick that does not
++    /// recentre to zero; lower it for fine pointer control.
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub deadzone: Option<f64>,
+ }
+ 
+ #[derive(Debug, Deserialize, Serialize, Clone, JsonSchema, PartialEq)]
+diff --git a/src/input/event/value.rs b/src/input/event/value.rs
+index be09160..270cfd7 100644
+--- a/src/input/event/value.rs
++++ b/src/input/event/value.rs
+@@ -703,6 +703,11 @@ impl InputValue {
+                 // Get the mouse speed in pixels-per-second
+                 let speed_pps = mouse_motion.speed_pps.unwrap_or(800);
+ 
++                // Get the deadzone below which the axis produces no motion.
++                // Defaults to 0.2, which suits a stick that does not recentre
++                // to zero but is far too coarse for fine pointer control.
++                let deadzone = mouse_motion.deadzone.unwrap_or(0.20).clamp(0.0, 1.0);
++
+                 // Get the value from the axis event
+                 let (mut x, mut y) = match self {
+                     InputValue::Vector2 { x, y } => (*x, *y),
+@@ -713,12 +718,12 @@ impl InputValue {
+                 // Check to see if the value is below a given threshold to prevent
+                 // mouse movements for axes that don't recenter to 0.
+                 if let Some(value) = x {
+-                    if value.abs() < 0.20 {
++                    if value.abs() < deadzone {
+                         x = Some(0.0);
+                     }
+                 }
+                 if let Some(value) = y {
+-                    if value.abs() < 0.20 {
++                    if value.abs() < deadzone {
+                         y = Some(0.0);
+                     }
+                 }

@@ -158,7 +158,8 @@ own `amd-staging-drm-next`. No newer, test, dev or beta kernel fixes it.
 ## Repo layout
 
 ```
-patches/   the two kernel patches (git am format)
+patches/   the two kernel patches (git am format), plus
+           inputplumber/ - configurable axis-to-mouse deadzone
 docs/      root cause, build guide, kernel parameters, controller/input
            findings, and the reverse-engineered gamepad protocol
 config/    InputPlumber stick-to-mouse mapping
@@ -166,7 +167,8 @@ systemd/   unit that reloads the InputPlumber profile at boot
 ghidra/    Dockerfile for the Ghidra + ghidra-cli container used for the RE
 scripts/   gulikit-ctl.py (gamepad settings over the MCU's UART);
            ayaneo-kbdlight.py (keyboard backlight over HID report 0x41);
-           stickverify.py (physical vs emulated stick comparison);
+           stickverify.py, mouseverify.py (input diagnostics);
+           build-inputplumber.sh (rebuild with the local patches);
            measure-backlight.sh, measure-stick.py, sticklive.py,
            stickcheck.py (diagnostics); ayaneo-ctl.py (vendor HID channel);
            rebuild.sh, ip-load-profile.sh, winvm.sh
@@ -226,7 +228,7 @@ Separate from the backlight, three input issues on the same device — see
 1. **Handheld Daemon crash-looping every 3 s** (fixable) — HHD and InputPlumber both
    try to manage the gamepad; InputPlumber wins the exclusive grab and HHD retries
    forever with `EBUSY`.
-2. **Right-stick pointer far too fast, and KDE's slider does nothing** (fixable) —
+2. **Right-stick pointer far too fast, and KDE's slider does nothing** (**fixed**) —
    the motion comes from Steam's Desktop Layout injected via XTEST, which bypasses
    libinput acceleration. Fixed by driving InputPlumber's own `mouse` target instead,
    which exposes a `speed_pps` knob.

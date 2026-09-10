@@ -86,3 +86,4 @@ mapping:
   - mouse:
       motion:
         speed_pps: 800
+        deadzone: 0.06

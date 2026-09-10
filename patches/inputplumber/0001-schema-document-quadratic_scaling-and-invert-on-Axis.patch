@@ -1,0 +1,44 @@
+From fabb744e5715751bf80fe0ae779d8bb7e16c8fa2 Mon Sep 17 00:00:00 2001
+From: dimitriuz <d.leshchenko@diagnocat.com>
+Date: Thu, 10 Sep 2026 17:14:15 +0200
+Subject: [PATCH 1/2] schema: document quadratic_scaling and invert on
+ AxisEvent
+
+device_profile_v1.json is hand-maintained -- src/generate.rs only emits
+capability_map_v2.json, and the AxisEvent/MouseMotionEvent titles in this file
+do not correspond to any Rust type. It has therefore drifted from the code.
+
+Profile mappings deserialise into AxisCapability, which carries deadzone,
+quadratic_scaling and invert. Only deadzone is documented here, so the other
+two look invalid -- and because this schema sets additionalProperties: false, a
+schema-aware editor rejects them outright. quadratic_scaling is in fact the
+only option that helps a stick which does not recentre to zero, since deadzone
+on an axis applies to axis->button translation alone.
+
+Document both, and note that they take effect on the target side of a mapping,
+which is where translate() reads them from.
+---
+ .../share/inputplumber/schema/device_profile_v1.json   | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/rootfs/usr/share/inputplumber/schema/device_profile_v1.json b/rootfs/usr/share/inputplumber/schema/device_profile_v1.json
+index a814f9a..1db5df3 100644
+--- a/rootfs/usr/share/inputplumber/schema/device_profile_v1.json
++++ b/rootfs/usr/share/inputplumber/schema/device_profile_v1.json
+@@ -567,6 +567,16 @@
+           "type": "number",
+           "default": 0.3,
+           "description": "Optional deadzone from 0.0 - 1.0. When this deadzone threshold is crossed, this input is considered 'pressed'."
++        },
++        "quadratic_scaling": {
++          "type": "boolean",
++          "default": false,
++          "description": "Optional. When set on a *target* axis, the normalised axis value is multiplied by its own magnitude, so small deflections are attenuated while full deflection is preserved. Useful for sticks that do not recentre to 0."
++        },
++        "invert": {
++          "type": "boolean",
++          "default": false,
++          "description": "Optional. When set on a *target* axis, negates both components of the axis value."
+         }
+       },
+       "required": [

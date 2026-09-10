@@ -254,7 +254,11 @@ the SLIDE measured here it took a 15.7% direction-dependent hysteresis band
 down to ~2.0% as seen by applications. It also slows genuine fine movement, so
 it is a trade, not a free win.
 
-## The axis→mouse deadzone is hardcoded at 20%
+## The axis→mouse deadzone is hardcoded at 20% — patched here
+
+> **Fixed locally.** `patches/inputplumber/` makes this configurable, and
+> `scripts/build-inputplumber.sh` builds and installs it. Jump to
+> [Patching it](#patching-it) for the how.
 
 If you drive a `mouse` target from a stick, there is a fixed threshold you
 cannot configure:
@@ -318,3 +322,58 @@ Since the emulated pad here has no evdev node, this also explains why non-Steam
 games may not see the controller at all: there is no `js*` or `event*` device
 for them to find. Switching the target to `xb360` gives them a standard evdev
 pad — see [The target is a Steam Deck controller](#1-the-target-is-a-steam-deck-controller) above.
+
+## Patching it
+
+Two patches against upstream `v0.79.4`, in `patches/inputplumber/`:
+
+* **0001** — `device_profile_v1.json` is hand-maintained: `src/generate.rs`
+  only emits `capability_map_v2.json`, and the `AxisEvent` / `MouseMotionEvent`
+  titles in it match no Rust type. It had drifted, documenting `deadzone` but
+  not `quadratic_scaling` or `invert`, while declaring
+  `additionalProperties: false` — so the one option that helps a stick which
+  does not recentre looks invalid to any schema-aware editor. This documents
+  both.
+* **0002** — adds `deadzone` to `MouseMotionCapability` and uses it in place of
+  the constant, defaulting to `0.20` so existing profiles are unaffected.
+
+```bash
+sudo pacman -S --needed rust clang libiio pkgconf
+./scripts/build-inputplumber.sh
+```
+
+The build takes about 4-5 minutes on a 7840U. It installs to
+`/usr/local/bin/inputplumber` and adds a systemd drop-in pointing the unit
+there, so the distro package is never touched. To go back:
+
+```bash
+sudo rm /etc/systemd/system/inputplumber.service.d/99-patched-binary.conf
+sudo systemctl daemon-reload && sudo systemctl restart inputplumber
+```
+
+**A package update does not refresh the override.** `pacman` upgrades
+`/usr/bin/inputplumber`, while the unit keeps running the older patched build
+from `/usr/local/bin`. Re-run the script after an update, and bump `TAG` if
+upstream has moved — `git am` will refuse rather than misapply if the patches
+need rebasing.
+
+### Choosing a deadzone
+
+Set it a little **above** the stick's resting offset, or the pointer drifts:
+`MouseDevice::poll()` integrates a stored velocity, and `update_state()` only
+changes that velocity when a translated event arrives — so a stick left resting
+above the deadzone keeps the pointer moving until something else moves it.
+
+```bash
+sudo ./scripts/mouseverify.py   # move the right stick slowly out from centre
+```
+
+It prints where motion first appeared and the largest deflection that produced
+none; the effective deadzone lies between them. On the SLIDE measured here the
+right stick rests at up to 4.7% and wanders by a couple of percent, so `0.06`
+is about the floor — still 3.3× finer than the stock `0.20`, with motion
+starting near 48 px/s instead of 160.
+
+The same event-driven behaviour is why a stationary stick produces no pointer
+motion at all, however far it is deflected. Do not conclude a deadzone is too
+high from a stick you are not currently moving.
