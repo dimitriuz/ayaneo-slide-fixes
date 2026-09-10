@@ -1,0 +1,21 @@
+[Unit]
+Description=AYANEO tray privileged helper (SMU power limits, platform profile)
+Documentation=https://github.com/dimitriuz/ayaneo-slide-fixes
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/ayaneo-tray --helper
+Group=wheel
+RuntimeDirectory=ayaneo-tray
+RuntimeDirectoryMode=0750
+# The helper only spawns ryzenadj and writes one sysfs file; keep the rest away.
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/sys/firmware/acpi/platform_profile
+NoNewPrivileges=no
+RestrictAddressFamilies=AF_UNIX
+MemoryDenyWriteExecute=yes
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
