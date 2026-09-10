@@ -164,6 +164,14 @@ scripts/   measure-backlight.sh, measure-stick.py, sticklive.py,
            rebuild.sh, ip-load-profile.sh, winvm.sh
 ```
 
+### Using InputPlumber
+
+If a game does not detect your controller — with or without InputPlumber — see
+**[docs/INPUTPLUMBER-GUIDE.md](docs/INPUTPLUMBER-GUIDE.md)**. The usual cause is
+that InputPlumber grabs the physical pad exclusively and games only ever see the
+*emulated* target, which by default here is a Valve Steam Deck Controller that
+non-Steam titles may not map. Switching the target to `xb360` fixes most cases.
+
 ### Towards a native Linux utility
 
 Some AYANEO features are already supported on Linux and need no work: the stick
