@@ -127,6 +127,33 @@ manual" and "a live supervisor exists" the same condition.
 There is no tachometer on this machine, so the UI shows commanded duty, not
 measured RPM.
 
+## Charging: decoded, not yet verified
+
+`system.set_charge_config` on an AS01 resolves to a single EC register:
+
+```
+EC[0xD1,0xD1]   AYASpace writes 101 to charge normally, 1 to stop charging
+                its getter treats 1..100 as "limited", >=101 or 0 as "normal"
+```
+
+The register accepts and holds arbitrary values — 80, 1 and 101 all stick — so
+it is a real byte rather than a boolean that snaps back, which is consistent
+with a charge threshold in percent. The JS API carries a `val` percentage
+alongside `enable`, and on this model only `enable` is ever sent, which hints
+the firmware supports a threshold that AYASpace does not expose here.
+
+**None of that is observed behaviour, and it is not implemented for that
+reason.** An attempt to verify at 97% charge was inconclusive: the EC had
+already stopped charging on its own — normal Li-ion recharge hysteresis, which
+declines to top up a nearly-full pack — so charging was not happening during
+the test window and no write could have shown an effect. `EC[0xD1,0xD1]`
+holding `80` proves only that the EC did not reject the byte.
+
+A valid test needs the battery well below the resume point (~85%) with charging
+actively sustained, then a threshold set below the current level. Until that
+happens this stays out of the tool: every other feature here was confirmed by
+watching the hardware do something, and this one has not been.
+
 ## What is deliberately missing
 
 **TDP read-back.** `ryzenadj` sets limits fine but cannot read them here:

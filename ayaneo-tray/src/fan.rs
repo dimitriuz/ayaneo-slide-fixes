@@ -97,10 +97,14 @@ pub fn cpu_temp_c() -> Option<f32> {
     None
 }
 
+/// Hand control back to the EC. This is also the documented way to clear a
+/// latched thermal trip, so it must actually clear it - the error returned by
+/// set_manual() tells the user to come here.
 pub fn set_auto() -> Result<()> {
     model_or_bail()?;
     ec::write(MODE.0, MODE.1, MODE_AUTO)?;
     MANUAL_ON.store(false, Ordering::SeqCst);
+    TRIPPED.store(false, Ordering::SeqCst);
     Ok(())
 }
 
