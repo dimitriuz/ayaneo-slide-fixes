@@ -21,6 +21,14 @@ pub struct Settings {
     /// Sustained power limit in watts, applied via the helper. None leaves the
     /// SMU alone entirely.
     pub tdp_watts: Option<u32>,
+    /// UI scale. Handheld panels are small and high-DPI, and what the
+    /// compositor reports is rarely what a thumb wants.
+    #[serde(default = "default_scale")]
+    pub ui_scale: f32,
+}
+
+fn default_scale() -> f32 {
+    1.35
 }
 
 impl Default for Settings {
@@ -31,6 +39,7 @@ impl Default for Settings {
             rings: Default::default(),
             power_profile: None,
             tdp_watts: None,
+            ui_scale: default_scale(),
         }
     }
 }

@@ -1,0 +1,132 @@
+//! Device I/O on a background thread.
+//!
+//! Everything this program talks to is slow by UI standards. A gamepad write
+//! retries up to five times at 300 ms; a helper request is a blocking socket
+//! round-trip that can wait on the EC mutex; probing walks every serial port.
+//! Run any of that on the render thread and the compositor marks the window
+//! "Not Responding" - which is exactly what the first version did.
+//!
+//! So the UI only ever sends jobs and drains results. Jobs are coalesced by
+//! kind: while a gamepad write is in flight, further edits replace the pending
+//! one rather than queueing behind it, so dragging a slider cannot build a
+//! backlog of stale writes.
+
+use std::collections::HashMap;
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::{Arc, Condvar, Mutex};
+
+use crate::{gamepad, helper, kbdlight, rings, state::Settings};
+
+pub enum Job {
+    ApplyPad(gamepad::Record),
+    ApplyKbd(kbdlight::KbdLight),
+    ApplyRings(rings::Rings),
+    Helper(String),
+    PollHelper,
+}
+
+pub enum Msg {
+    /// Human-readable outcome for the status line.
+    Status(String),
+    /// Reply to an explicit Helper job.
+    HelperReply(Result<String, String>),
+    /// Result of PollHelper: (helper_up, fan status line).
+    HelperState(bool, String),
+}
+
+fn key(job: &Job) -> &'static str {
+    match job {
+        Job::ApplyPad(_) => "pad",
+        Job::ApplyKbd(_) => "kbd",
+        Job::ApplyRings(_) => "rings",
+        Job::Helper(_) => "helper",
+        Job::PollHelper => "poll",
+    }
+}
+
+#[derive(Default)]
+struct Queue {
+    /// At most one pending job per kind; a newer one supersedes an older.
+    pending: HashMap<&'static str, Job>,
+    order: Vec<&'static str>,
+}
+
+pub struct Worker {
+    queue: Arc<(Mutex<Queue>, Condvar)>,
+    pub rx: Receiver<Msg>,
+}
+
+impl Worker {
+    pub fn spawn(devices: crate::hw::Devices, repaint: impl Fn() + Send + 'static) -> Self {
+        let (tx, rx) = channel();
+        let queue = Arc::new((Mutex::new(Queue::default()), Condvar::new()));
+        let q = queue.clone();
+        std::thread::spawn(move || run(q, tx, devices, repaint));
+        Worker { queue, rx }
+    }
+
+    pub fn submit(&self, job: Job) {
+        let (lock, cv) = &*self.queue;
+        let mut q = lock.lock().unwrap();
+        let k = key(&job);
+        if q.pending.insert(k, job).is_none() {
+            q.order.push(k);
+        }
+        cv.notify_one();
+    }
+}
+
+fn run(
+    queue: Arc<(Mutex<Queue>, Condvar)>,
+    tx: Sender<Msg>,
+    devices: crate::hw::Devices,
+    repaint: impl Fn(),
+) {
+    loop {
+        let job = {
+            let (lock, cv) = &*queue;
+            let mut q = lock.lock().unwrap();
+            while q.order.is_empty() {
+                q = cv.wait(q).unwrap();
+            }
+            let k = q.order.remove(0);
+            q.pending.remove(k)
+        };
+        let Some(job) = job else { continue };
+
+        let msg = match job {
+            Job::ApplyPad(rec) => match &devices.gamepad {
+                Some(p) => match gamepad::send(p, &rec) {
+                    Ok(_) => Msg::Status("Controller updated".into()),
+                    Err(e) => Msg::Status(format!("Controller: {e}")),
+                },
+                None => Msg::Status("Controller unavailable".into()),
+            },
+            Job::ApplyKbd(k) => match &devices.kbd {
+                Some(p) => match kbdlight::apply(p, &k) {
+                    Ok(()) => Msg::Status("Keyboard light updated".into()),
+                    Err(e) => Msg::Status(format!("Keyboard: {e}")),
+                },
+                None => Msg::Status("Keyboard unavailable".into()),
+            },
+            Job::ApplyRings(r) => match &devices.rings {
+                Some(p) => match rings::apply(p, &r) {
+                    Ok(()) => Msg::Status("Ring lights updated".into()),
+                    Err(e) => Msg::Status(format!("Rings: {e}")),
+                },
+                None => Msg::Status("Rings unavailable".into()),
+            },
+            Job::Helper(cmd) => {
+                Msg::HelperReply(helper::request(&cmd).map_err(|e| e.to_string()))
+            }
+            Job::PollHelper => match helper::request("fan status") {
+                Ok(s) => Msg::HelperState(true, s),
+                Err(_) => Msg::HelperState(false, String::new()),
+            },
+        };
+        if tx.send(msg).is_err() {
+            return;
+        }
+        repaint();
+    }
+}

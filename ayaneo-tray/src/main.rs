@@ -16,6 +16,8 @@ mod rings;
 mod state;
 mod telemetry;
 mod tray;
+mod widgets;
+mod worker;
 mod ui;
 
 use anyhow::Result;
@@ -172,8 +174,8 @@ fn run_gui(start_visible: bool) -> Result<()> {
 
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([560.0, 640.0])
-            .with_min_inner_size([420.0, 400.0])
+            .with_inner_size([620.0, 780.0])
+            .with_min_inner_size([460.0, 480.0])
             .with_title("AYANEO")
             .with_visible(start_visible),
         ..Default::default()
@@ -181,7 +183,15 @@ fn run_gui(start_visible: bool) -> Result<()> {
     eframe::run_native(
         "ayaneo-tray",
         opts,
-        Box::new(move |_cc| Ok(Box::new(ui::App::new(rx, start_visible)))),
+        Box::new(move |cc| {
+            // Probe once here rather than per-frame: it walks every serial port.
+            let (settings, trusted) = state::load();
+            let devices = hw::Devices::probe(&settings.record(), trusted);
+            let mut app = ui::App::new(rx, start_visible, devices.clone());
+            let ctx = cc.egui_ctx.clone();
+            app.attach_worker(worker::Worker::spawn(devices, move || ctx.request_repaint()));
+            Ok(Box::new(app))
+        }),
     )
     .map_err(|e| anyhow::anyhow!("{e}"))
 }

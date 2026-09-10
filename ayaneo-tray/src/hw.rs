@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use crate::{gamepad, kbdlight, rings, state::Settings};
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Devices {
     pub gamepad: Option<PathBuf>,
     pub gamepad_err: Option<String>,

@@ -16,6 +16,23 @@ Protocols are documented in [`../docs/GAMEPAD-PROTOCOL.md`](../docs/GAMEPAD-PROT
 and [`../docs/AYASPACE-FEATURES.md`](../docs/AYASPACE-FEATURES.md); everything here
 was established by reverse-engineering AYASpace 3.2.0.4 and verified on hardware.
 
+## Interface
+
+Built for a 7" panel used with a thumb, not a desktop with a mouse: one idea per
+row, every option visible as a large target rather than folded into a dropdown,
+and the dense groups — triggers, gyro, turbo — collapsed until asked for. All
+sizing comes from `widgets.rs` so it stays consistent instead of drifting per
+tab, and *About* has a UI scale slider because what a compositor reports for a
+high-DPI handheld is rarely what a thumb wants.
+
+**No device I/O happens on the render thread.** A gamepad write retries up to
+five times at 300 ms, a helper request is a blocking socket round-trip that can
+wait on the EC mutex, and probing walks every serial port — any of which stalls
+the compositor into marking the window "Not Responding", which is exactly what
+the first version did. `worker.rs` runs all of it on a background thread, and
+coalesces jobs by kind so dragging a slider replaces the pending write instead
+of queueing a backlog of stale ones.
+
 ## Design
 
 **The GUI is unprivileged.** One udev rules file grants the *active session
