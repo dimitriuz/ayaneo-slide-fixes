@@ -1,5 +1,5 @@
 [Unit]
-Description=AYANEO tray privileged helper (SMU power limits, platform profile)
+Description=AYANEO tray privileged helper (fan, SMU power limits, platform profile)
 Documentation=https://github.com/dimitriuz/ayaneo-slide-fixes
 
 [Service]
@@ -12,9 +12,14 @@ RuntimeDirectoryMode=0750
 ProtectHome=yes
 ProtectSystem=strict
 ReadWritePaths=/sys/firmware/acpi/platform_profile
+# Fan control is raw port I/O through /dev/port.
+DeviceAllow=/dev/port rw
+# Whatever happens to the process, the fan goes back to the EC's own curve.
+ExecStopPost=/usr/bin/ayaneo-tray --fan-auto
 NoNewPrivileges=no
 RestrictAddressFamilies=AF_UNIX
 MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=CAP_SYS_RAWIO CAP_DAC_OVERRIDE
 Restart=on-failure
 
 [Install]

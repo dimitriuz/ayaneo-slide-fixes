@@ -82,6 +82,29 @@ fn handle(stream: UnixStream) {
                 _ => Err(anyhow::anyhow!("tdp needs three integers, in watts")),
             },
             ["profile", name] => set_profile(name).map(|_| "ok".into()),
+            ["fan", "auto"] => {
+                // also clears a latched thermal trip
+                crate::fan::set_auto().map(|_| "auto".into())
+            }
+            ["fan", "manual", pct] => match pct.parse::<u8>() {
+                Ok(p) => crate::fan::set_manual(p, false).map(|_| format!("manual {p}%")),
+                Err(_) => Err(anyhow::anyhow!("fan manual needs a percentage")),
+            },
+            ["fan", "manual", pct, "force"] => match pct.parse::<u8>() {
+                Ok(p) => crate::fan::set_manual(p, true).map(|_| format!("manual {p}%")),
+                Err(_) => Err(anyhow::anyhow!("fan manual needs a percentage")),
+            },
+            ["fan", "status"] => crate::fan::status().map(|st| {
+                format!(
+                    "supported={} mode=0x{:02x} duty={} manual={} tripped={} temp={}",
+                    st.supported,
+                    st.mode_raw,
+                    st.duty_raw,
+                    st.manual,
+                    st.tripped,
+                    st.temp_c.map(|t| format!("{t:.1}")).unwrap_or_else(|| "?".into())
+                )
+            }),
             [] => continue,
             _ => Err(anyhow::anyhow!("unknown command")),
         };
@@ -95,6 +118,11 @@ fn handle(stream: UnixStream) {
     }
 }
 
+extern "C" fn handle_signal(_sig: libc::c_int) {
+    crate::fan::restore_on_exit();
+    std::process::exit(0);
+}
+
 pub fn run() -> Result<()> {
     let path = Path::new(SOCKET);
     if let Some(dir) = path.parent() {
@@ -105,6 +133,16 @@ pub fn run() -> Result<()> {
     // 0660: owner root, group as set by the unit's Group=. Anyone in that
     // group can set power limits, which is the intended boundary.
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o660))?;
+    // Establish a known-good fan state before anything else: an earlier
+    // instance may have died without running its teardown.
+    crate::fan::reset_at_start();
+    // Supervises manual fan mode; see fan.rs for why this is not optional.
+    crate::fan::start_monitor();
+    // Hand the fan back to the EC on any orderly exit. The unit repeats this
+    // in ExecStopPost so an unclean kill is covered too.
+    for sig in [libc::SIGINT, libc::SIGTERM] {
+        unsafe { libc::signal(sig, handle_signal as *const () as libc::sighandler_t) };
+    }
     eprintln!("ayaneo-tray helper listening on {SOCKET}");
     for stream in listener.incoming() {
         match stream {

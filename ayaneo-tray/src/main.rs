@@ -5,6 +5,8 @@
 //! report, and the ring LEDs over sysfs. See the docs/ directory of
 //! ayaneo-slide-fixes for how each protocol was established.
 
+mod ec;
+mod fan;
 mod gamepad;
 mod helper;
 mod hw;
@@ -26,6 +28,7 @@ ayaneo-tray - AYANEO handheld control
     ayaneo-tray --status     print device and settings state, change nothing
     ayaneo-tray --restore    re-apply saved settings and exit (for a login unit)
     ayaneo-tray --helper     run the privileged helper (systemd service)
+    ayaneo-tray --fan-auto   hand the fan back to the EC and exit (failsafe)
     ayaneo-tray --help
 ";
 
@@ -194,6 +197,12 @@ fn main() -> Result<()> {
         }
         Some("--restore") => restore(),
         Some("--helper") => helper::run(),
+        // Used by the helper unit's ExecStopPost, so an unclean exit still
+        // leaves the fan under the EC's own control.
+        Some("--fan-auto") => {
+            fan::restore_on_exit();
+            Ok(())
+        }
         Some("--help" | "-h") => {
             print!("{USAGE}");
             Ok(())

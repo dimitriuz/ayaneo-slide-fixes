@@ -9,7 +9,7 @@ Controller   deadzone, per-stick sensitivity, trigger and gyro levels,
              per-button turbo, rumble, ABXY swap, factory reset
 Lighting     keyboard backlight (colour, 3 effects, brightness, Fn light)
              joystick ring LEDs (colour, brightness)
-Power        ACPI platform profile, sustained TDP via ryzenadj, sensors
+Power        ACPI platform profile, sustained TDP via ryzenadj, fan, sensors
 ```
 
 Protocols are documented in [`../docs/GAMEPAD-PROTOCOL.md`](../docs/GAMEPAD-PROTOCOL.md)
@@ -81,14 +81,53 @@ The tray uses StatusNotifierItem over D-Bus, so it needs an SNI host. KDE
 Plasma has one built in. GNOME needs the AppIndicator extension — without it
 the app still runs, but there is no icon, so use `--window`.
 
-## What is deliberately missing
+## Fan control
 
-**Fan control.** This machine exposes no kernel fan interface at all: no
-`pwm*`, no `fan*_input`, and `ayaneo-platform` provides only LEDs. Controlling
-the fan means writing EC registers that have not been identified. Guessing at
-registers on a fan controller is a thermal risk, so it waits for the same
-evidence the rest of this was built on — AYASpace's `fancontrol.set_cfg`
-decompiled, registers confirmed, behaviour measured.
+There is no kernel fan interface on this machine — no `pwm*`, no `fan*_input`.
+Control goes through two EC registers, taken from AYASpace's
+`CEcControl::FanSetManual` / `FanSetAuto` and confirmed on hardware:
+
+```
+EC[0xD1,0xC8]   mode   0x00 = EC automatic curve, 0xA5 = manual
+EC[0x18,0x04]   duty   0-255,  duty = percent / 100 * 255
+```
+
+The duty register was verified **read-only first**: under load it climbs
+monotonically with CPU temperature, saturates at `0xFF`, and returns to an
+identical `0x4D` (30%) idle floor. The mode register's page comes from the
+class constructor, which initialises the address word to `0xD100` — not the
+`0x18` the duty write uses, which is the sort of thing worth checking rather
+than assuming.
+
+Gated on `board_name`, not `product_name`: AYASpace's model codes are board
+codes, and on a SLIDE `product_name` is "SLIDE" while `board_name` is "AS01".
+Only `AS01` and `AB05*` are enabled; an AB10 uses `0x1809`/`0x2F1` and other
+models an `0xFE8004xx` block, so anything else is refused rather than guessed.
+
+### The guards, and why
+
+Every other setting here is inert if it is wrong. A fan left at a low duty
+under load is not — the CPU throttles at Tjmax rather than come to harm, but it
+is a real thermal failure, and it can be caused by the process simply dying.
+So manual mode is never left unsupervised. All three are tested:
+
+| guard | behaviour | verified |
+|---|---|---|
+| duty floor | below 20% refused unless forced; >100% refused | rejects 5% and 150% |
+| crash, main process | `ExecStopPost` restores automatic control | SIGKILL of the main PID → `mode=0x00` |
+| crash, whole cgroup | next start resets to a known-good state | `systemctl kill` → restored, logged |
+| thermal | above 85 °C forces automatic control and **latches** | fired at 85.4 °C under load at 20% duty |
+
+The startup reset is the important one. Teardown hooks are not enough on their
+own: `systemctl kill` takes `ExecStopPost` with the rest of the cgroup, and a
+power cut runs nothing. Because the helper is the only thing that engages
+manual mode and it restarts on failure, resetting at start makes "the fan is in
+manual" and "a live supervisor exists" the same condition.
+
+There is no tachometer on this machine, so the UI shows commanded duty, not
+measured RPM.
+
+## What is deliberately missing
 
 **TDP read-back.** `ryzenadj` sets limits fine but cannot read them here:
 without the `ryzen_smu` kernel module, `/dev/mem` access is refused. The UI

@@ -36,6 +36,9 @@ pub struct App {
     profiles: Vec<String>,
     profile: Option<String>,
     helper_up: bool,
+    fan_manual: bool,
+    fan_pct: u8,
+    fan_status: String,
 }
 
 impl App {
@@ -58,6 +61,9 @@ impl App {
             profiles: power::available(),
             profile: power::current(),
             helper_up: helper::available(),
+            fan_manual: false,
+            fan_pct: 45,
+            fan_status: String::new(),
         }
     }
 
@@ -421,6 +427,57 @@ impl App {
         }
 
         ui.add_space(10.0);
+        ui.heading("Fan");
+        if !self.helper_up {
+            ui.label(
+                egui::RichText::new("Needs the helper (see above).").small().weak(),
+            );
+        } else {
+            ui.horizontal(|ui| {
+                if ui.selectable_label(!self.fan_manual, "Auto (EC curve)").clicked() {
+                    match helper::request("fan auto") {
+                        Ok(_) => {
+                            self.fan_manual = false;
+                            self.status = "fan: EC automatic".into();
+                        }
+                        Err(e) => self.status = format!("fan: {e}"),
+                    }
+                }
+                if ui.selectable_label(self.fan_manual, "Manual").clicked() {
+                    match helper::request(&format!("fan manual {}", self.fan_pct)) {
+                        Ok(_) => {
+                            self.fan_manual = true;
+                            self.status = format!("fan: manual {}%", self.fan_pct);
+                        }
+                        Err(e) => self.status = format!("fan: {e}"),
+                    }
+                }
+            });
+            let slider = ui.add_enabled(
+                self.fan_manual,
+                egui::Slider::new(&mut self.fan_pct, 20..=100).text("Duty %"),
+            );
+            if slider.drag_stopped() || slider.lost_focus() {
+                match helper::request(&format!("fan manual {}", self.fan_pct)) {
+                    Ok(_) => self.status = format!("fan: manual {}%", self.fan_pct),
+                    Err(e) => self.status = format!("fan: {e}"),
+                }
+            }
+            ui.label(egui::RichText::new(&self.fan_status).small());
+            ui.label(
+                egui::RichText::new(
+                    "The EC's own curve is always the backstop: above 85 °C the helper \
+                     forces automatic control and latches until you press Auto, and the \
+                     fan is handed back whenever the helper stops. Duties below 20% are \
+                     refused. There is no tachometer on this machine, so the figure \
+                     shown is commanded duty, not measured RPM.",
+                )
+                .small()
+                .weak(),
+            );
+        }
+
+        ui.add_space(10.0);
         ui.heading("Sensors");
         ui.horizontal(|ui| {
             for (n, v) in &self.telemetry.temps {
@@ -441,10 +498,8 @@ impl App {
         ui.add_space(10.0);
         ui.label(
             egui::RichText::new(
-                "Fan control is absent on purpose: this machine exposes no kernel fan \
-                 interface at all, so controlling it means writing EC registers that \
-                 have not been identified yet. Guessing at those is a thermal risk, so \
-                 it waits for the same evidence the rest of this tool was built on.",
+                "Fan registers are verified for AS01 and AB05 only. Other AYANEO models \
+                 use different EC addresses, and this refuses rather than guessing.",
             )
             .small()
             .weak(),
@@ -502,6 +557,16 @@ impl eframe::App for App {
             self.telemetry = telemetry::read();
             self.profile = power::current();
             self.last_telemetry = Instant::now();
+            if self.helper_up {
+                match helper::request("fan status") {
+                    Ok(s) => {
+                        // reflect the helper's view, so a thermal trip shows up
+                        self.fan_manual = s.contains("manual=true");
+                        self.fan_status = s;
+                    }
+                    Err(e) => self.fan_status = format!("fan status: {e}"),
+                }
+            }
         }
         self.flush();
 
