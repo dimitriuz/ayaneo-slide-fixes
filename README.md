@@ -165,6 +165,8 @@ config/    InputPlumber stick-to-mouse mapping
 systemd/   unit that reloads the InputPlumber profile at boot
 ghidra/    Dockerfile for the Ghidra + ghidra-cli container used for the RE
 scripts/   gulikit-ctl.py (gamepad settings over the MCU's UART);
+           ayaneo-kbdlight.py (keyboard backlight over HID report 0x41);
+           stickverify.py (physical vs emulated stick comparison);
            measure-backlight.sh, measure-stick.py, sticklive.py,
            stickcheck.py (diagnostics); ayaneo-ctl.py (vendor HID channel);
            rebuild.sh, ip-load-profile.sh, winvm.sh
@@ -177,6 +179,21 @@ If a game does not detect your controller — with or without InputPlumber — s
 that InputPlumber grabs the physical pad exclusively and games only ever see the
 *emulated* target, which by default here is a Valve Steam Deck Controller that
 non-Steam titles may not map. Switching the target to `xb360` fixes most cases.
+
+### AYASpace features from Linux
+
+A full inventory of what AYASpace can do, the transport behind each feature, and
+how much of it works on Linux: **[docs/AYASPACE-FEATURES.md](docs/AYASPACE-FEATURES.md)**.
+Two independent transports carry nearly all of it, and both are now implemented:
+
+```bash
+# gamepad MCU, over an on-board UART
+sudo gulikit-ctl set --deadzone off --right 50
+sudo gulikit-ctl set --trigger-l2 high --turbo-a burst --rumble medium
+
+# keyboard backlight, over HID feature report 0x41
+sudo ayaneo-kbdlight --color 00ff88 --mode breath
+```
 
 ### Gamepad settings from Linux
 
@@ -196,12 +213,10 @@ sudo gulikit-ctl set --deadzone off --right 50
 It covers the stick deadzone, per-stick sensitivity (50/100/150), rumble level,
 trigger and gyro levels, per-button turbo, and ABXY swap.
 
-Of the rest: the stick ring RGB (`ayaneo:rgb:joystick_rings`) and TDP/power (HHD,
-`platform_profile`) already work on Linux and need nothing. The **keyboard
-backlight** is the one item still outstanding — it *does* go over a vendor HID
-channel, which `scripts/ayaneo-ctl.py` already finds and can send reports on;
-only the payloads are missing. See
-**[docs/CAPTURE-PLAN.md](docs/CAPTURE-PLAN.md)**.
+The **keyboard backlight** is solved too, on a different transport: a HID
+feature report `0x41` to the keyboard MCU — `scripts/ayaneo-kbdlight.py`. Of the
+rest, the stick ring RGB (`ayaneo:rgb:joystick_rings`) and TDP/power (HHD,
+`platform_profile`) already work on Linux and need nothing.
 
 ## Also in this repo: controller / right-stick fixes
 

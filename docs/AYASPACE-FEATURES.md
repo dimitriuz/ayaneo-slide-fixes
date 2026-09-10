@@ -1,0 +1,185 @@
+# What AYASpace exposes, and how much of it Linux can reach
+
+A complete inventory of the AYASpace 3.2.0.4 hardware API, the transport behind
+each feature, and whether Linux can already do it. Companion to
+[GAMEPAD-PROTOCOL.md](GAMEPAD-PROTOCOL.md), which covers the gamepad UART in
+detail.
+
+## Three sources, in order of usefulness
+
+Reverse-engineering this got much cheaper once it became clear where to look.
+
+**1. `web/frontend/*.js` — the authoritative source for enums.** AYASpace is a
+CEF app; its whole UI is unminified-enough webpack bundles sitting in
+`C:\Program Files (x86)\AYASpace\web\frontend`. Every option list, every level
+name, and every `AYASpaceApi("...")` call site is in there in plain text. This
+is where the meaning of numeric fields lives, and no amount of decompiling the
+native side recovers it.
+
+**2. `%APPDATA%\AYASpace\database.db` — a SQLite file with the live config.**
+`Config` is a key/value table holding the current state of nearly everything,
+which doubles as a **known-good restore value** before poking at hardware.
+
+```sql
+sqlite3 database.db 'select key, val from Config;'
+```
+
+```
+RGBIson              0
+RGBBLeftrightness    100          -- their typo, not ours
+RGBRightBrightness   100
+RGBMode              0
+LsColor              -1
+RsColor              -1
+KeyBoardLightConfig  {"brightness":10,"color":12287,"enable":1,"fnIson":0,"mode":1}
+TouchpadCfg          { ...full trackpad key mapping... }
+FanAutoByAya         1
+```
+
+**3. `AYASpaceCef.exe` — the transports.** The JS calls `AYASpaceApi(name, args)`;
+each `name` maps to a native handler registered by the idiom described in
+GAMEPAD-PROTOCOL.md. Decompile only what you need the *wire format* of.
+
+## The API surface
+
+`strings AYASpaceCef.exe | grep -E '^[a-z_]+\.[a-z_0-9]+$'` gives the whole
+handler namespace. The hardware-relevant parts:
+
+| namespace | what it covers |
+|---|---|
+| `master.*` | the GuLiKit gamepad MCU — 12 handlers, all one UART record |
+| `rgb.*` | keyboard backlight, stick ring LEDs, AYA logo light |
+| `key.*` | hardware button remap, on-screen keyboard, quick menu |
+| `controller.*` | detachable-controller and mini-PC features |
+| `gamepad.*`, `gamepad_transfer.*` | per-model variants (GEEK etc.), ViGEm plumbing |
+| `touchpad.*` | trackpad key mapping (models that have trackpads) |
+| `fancontrol.*`, `system.*` | fan curves, TDP, charge policy |
+| `super_joy.*` | the external Super Joy accessory — **not** the built-in pad |
+
+`super_joy.*` is a trap: it has an inviting `set_stick_deadzone` /
+`set_stick_sensitivity` pair that has nothing to do with the built-in
+controller. `master.*` is the built-in pad.
+
+## Status per feature
+
+| feature | transport | Linux |
+|---|---|---|
+| Stick deadzone | GuLiKit UART, record byte 4 hi | **`gulikit-ctl set --deadzone`** |
+| Per-stick sensitivity | UART, byte 3 nibbles | **`gulikit-ctl set --left/--right`** |
+| Trigger L2/R2 levels | UART, byte 1 nibbles | **`gulikit-ctl set --trigger-l2/-r2`** |
+| Gyro L1/L2 levels | UART, byte 2 nibbles | **`gulikit-ctl set --gyro-l1/-l2`** |
+| Rumble level | UART, byte 4 lo | **`gulikit-ctl set --rumble`** |
+| Turbo per button | UART, bytes 5-7 nibbles | **`gulikit-ctl set --turbo-a`** … |
+| Swap ABXY | UART, byte 8 bit 0x10 | **`gulikit-ctl set --swap-abxy`** |
+| Restore factory defaults | UART, factory record | **`gulikit-ctl factory-reset`** |
+| **Keyboard backlight** | HID feature report `0x41` | **`ayaneo-kbdlight`** |
+| Stick ring LEDs | EC | already works — `ayaneo-platform`, `ayaneo:rgb:joystick_rings` |
+| TDP / power / fan | EC, ACPI | already works — HHD, `platform_profile` |
+| Hardware button remap | `key.*`, not investigated | InputPlumber already remaps these better |
+| Back-key remap | UART bytes 9-12 — **not sent on the SLIDE** | InputPlumber (profile paddles) |
+| Trackpad mapping | `TouchpadCfg` | N/A — the SLIDE has no trackpads |
+
+Two things the SLIDE cannot use even though the API exists: record bytes 9-12
+are only transmitted in the AYANEO KUN's 15-byte frame, and `master.set_back_key`
+writes into them. And `touchpad.*` targets hardware this model does not have.
+
+---
+
+# The keyboard backlight
+
+**Transport: a HID feature report, id `0x41`, 8 bytes**, to the keyboard MCU
+(SiGma Micro, `1C4F:007C`). Not the EC, and not the gamepad UART.
+
+Pick the device by capability rather than by name — the right interface is the
+one whose HID report descriptor declares report id `0x41`:
+
+```bash
+# the descriptor byte pair 85 41 is "Report ID 0x41"
+$ for h in /sys/class/hidraw/hidraw*; do
+      grep -qa $'\x85\x41' $h/device/report_descriptor 2>/dev/null \
+        && echo "/dev/$(basename $h)"
+  done
+/dev/hidraw1
+```
+
+`ayaneo-kbdlight` does this itself, so `--device` is only needed to override it.
+
+The same physical keyboard exposes a second interface with no feature reports
+at all, so matching on VID/PID alone picks the wrong one half the time.
+
+## Report layout
+
+```
+    byte 0   0x41            report id
+    byte 1   R               `color` >> 16
+    byte 2   G               `color` >> 8
+    byte 3   B               `color` & 0xff
+    byte 4   mode            effect, 0-6
+    byte 5   enable          0 = off, 1 = on
+    byte 6   0x40 | fnIson   high nibble is a hardcoded 4
+    byte 7   0x5A            terminator
+```
+
+Built at `0x140194a70`; `color` is split into R/G/B by `0x140194520`, and byte 6
+is assembled by `0x1401945c0` (the `fnIson` bit) and `0x140194600` (the constant
+`4`, which has exactly one caller and is never anything else).
+
+## Effect modes
+
+From AYASpace's own option list (bundle `9906-*.js`):
+
+| mode | UI label | notes |
+|---|---|---|
+| 0 | Default | |
+| 1 | breath | |
+| 2 | loop | observably a slow colour cycle |
+| 3 | google | |
+| 4 | Scanning | |
+| 5 | Repple | their spelling of ripple |
+| 6 | always | |
+
+Several entries carry `show:` guards, so any given model exposes a subset —
+which is why the Windows UI shows about five, not seven.
+
+## `brightness` is a no-op
+
+`KeyBoardLightConfig` contains `"brightness":10`, the JS sends it, and the
+native setter at `0x1401945b0` is **three instructions** — spill both
+arguments, return:
+
+```
+1401945b0  MOV  byte ptr [RSP + 0x10], DL
+1401945b4  MOV  qword ptr [RSP + 0x8], RCX
+1401945b9  RET
+```
+
+There is no brightness field in the 8-byte report, so the value has never meant
+anything. `ayaneo-kbdlight --brightness` therefore scales R/G/B client-side
+instead, which is the only way to dim this backlight.
+
+## No read-back
+
+The MCU implements SET_REPORT and **STALLs GET_REPORT** on `0x41` — every
+length returns `EPIPE`. AYASpace issues the read anyway (`0x140194e10`),
+checks the return value, and carries on when it fails. So the current state
+cannot be queried from the hardware, and `ayaneo-kbdlight` caches it in
+`/var/lib/ayaneo/kbdlight.json`, mirroring `KeyBoardLightConfig`.
+
+## Usage
+
+```bash
+sudo install -m755 scripts/ayaneo-kbdlight.py /usr/local/bin/ayaneo-kbdlight
+
+sudo ayaneo-kbdlight                        # print cached state, write nothing
+sudo ayaneo-kbdlight --color 00ff88
+sudo ayaneo-kbdlight --color red --mode breath
+sudo ayaneo-kbdlight --mode scanning
+sudo ayaneo-kbdlight --brightness 40        # scales RGB locally
+sudo ayaneo-kbdlight --enable off
+sudo ayaneo-kbdlight --fn on                # Fn indicator light
+sudo ayaneo-kbdlight --reset                # AYASpace defaults
+sudo ayaneo-kbdlight --raw '41 00 2f ff 01 01 40 5a'
+```
+
+To carry your Windows settings over, read them out of the SQLite config and
+convert: `color` is a plain integer, so `12287` is `#002FFF`.

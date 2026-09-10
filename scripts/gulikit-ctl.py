@@ -55,6 +55,23 @@ FACTORY = bytes([0xE7, 0x00, 0x00, 0x22, 0x02, 0x00,
 SENS = {50: 1, 100: 2, 150: 3}
 SENS_REV = {v: k for k, v in SENS.items()}
 
+# From AYASpace's own UI option lists (web/frontend bundle 9906):
+#   [{key:1,label:"Low"},{key:2,label:"Medium"},{key:3,label:"High"}]
+#   [{key:0,label:"OFF"},{key:1,label:"Burst"},{key:2,label:"Auto"}]
+LEVEL = {"off": 0, "low": 1, "medium": 2, "high": 3}
+LEVEL_REV = {v: k for k, v in LEVEL.items()}
+TURBO = {"off": 0, "burst": 1, "auto": 2}
+TURBO_REV = {v: k for k, v in TURBO.items()}
+
+
+def _nib(byte, high):
+    return (byte >> 4) & 0xF if high else byte & 0xF
+
+
+def _set_nib(byte, high, val):
+    val &= 0xF
+    return (byte & 0x0F) | (val << 4) if high else (byte & 0xF0) | val
+
 
 # ---------------------------------------------------------------- transport
 
@@ -204,6 +221,11 @@ def save_state(path, state):
 
 # ------------------------------------------------------------------ display
 
+def _lbl(table, v):
+    name = table.get(v)
+    return f"{v} ({name})" if name else str(v)
+
+
 def describe(state):
     b = state
     dz_off = (b[4] & 0xF0) != 0
@@ -213,12 +235,12 @@ def describe(state):
         f"stick deadzone  {'OFF (disabled)' if dz_off else 'ON (active)'}",
         f"left stick sens {left}  ({SENS_REV.get(left, '?')})",
         f"right stick sens {right}  ({SENS_REV.get(right, '?')})",
-        f"rumble level    {b[4] & 0xF}",
-        f"trigger L2/R2   {(b[1] >> 4) & 0xF} / {b[1] & 0xF}",
-        f"gyro L1/L2      {(b[2] >> 4) & 0xF} / {b[2] & 0xF}",
-        f"turbo A/B       {(b[5] >> 4) & 0xF} / {b[5] & 0xF}",
-        f"turbo X/Y       {(b[6] >> 4) & 0xF} / {b[6] & 0xF}",
-        f"turbo R1/R2     {(b[7] >> 4) & 0xF} / {b[7] & 0xF}",
+        f"rumble level    {_lbl(LEVEL_REV, b[4] & 0xF)}",
+        f"trigger L2/R2   {_lbl(LEVEL_REV, (b[1] >> 4) & 0xF)} / {_lbl(LEVEL_REV, b[1] & 0xF)}",
+        f"gyro L1/L2      {_lbl(LEVEL_REV, (b[2] >> 4) & 0xF)} / {_lbl(LEVEL_REV, b[2] & 0xF)}",
+        f"turbo A/B       {_lbl(TURBO_REV, (b[5] >> 4) & 0xF)} / {_lbl(TURBO_REV, b[5] & 0xF)}",
+        f"turbo X/Y       {_lbl(TURBO_REV, (b[6] >> 4) & 0xF)} / {_lbl(TURBO_REV, b[6] & 0xF)}",
+        f"turbo R1/R2     {_lbl(TURBO_REV, (b[7] >> 4) & 0xF)} / {_lbl(TURBO_REV, b[7] & 0xF)}",
         f"swap ABXY       {'yes' if b[8] & 0x10 else 'no'}",
     ]
     return "\n".join(out)
@@ -262,9 +284,22 @@ def cmd_set(args):
     if args.right is not None:
         state[3] = (state[3] & 0xF0) | SENS[args.right]
     if args.rumble is not None:
-        state[4] = (state[4] & 0xF0) | (args.rumble & 0x0F)
+        state[4] = (state[4] & 0xF0) | LEVEL[args.rumble]
     if args.swap_abxy is not None:
         state[8] = (state[8] & 0xEF) | (0x10 if args.swap_abxy == "on" else 0x00)
+    # byte 1: trigger levels, byte 2: gyro levels; index 1 is the high nibble
+    for opt, idx, high in (("trigger_l2", 1, True), ("trigger_r2", 1, False),
+                           ("gyro_l1", 2, True), ("gyro_l2", 2, False)):
+        val = getattr(args, opt, None)
+        if val is not None:
+            state[idx] = _set_nib(state[idx], high, LEVEL[val])
+    # bytes 5-7: per-button turbo
+    for opt, idx, high in (("turbo_a", 5, True), ("turbo_b", 5, False),
+                           ("turbo_x", 6, True), ("turbo_y", 6, False),
+                           ("turbo_r1", 7, True), ("turbo_r2", 7, False)):
+        val = getattr(args, opt, None)
+        if val is not None:
+            state[idx] = _set_nib(state[idx], high, TURBO[val])
 
     if bytes(state) == before and not args.force:
         print("no change requested")
@@ -288,6 +323,18 @@ def cmd_apply(args):
     if not plausible(reply):
         die(f"{port}: no valid reply (got {reply.hex(' ') if reply else 'nothing'})")
     print(f"{port}: sent {frame.hex(' ')}  ack {reply.hex(' ')}")
+
+
+def cmd_factory_reset(args):
+    """What master.restore_factory does: send the factory record, then cache it."""
+    state = bytearray(FACTORY)
+    port = find_port(state, args.port, args.verbose)
+    frame, reply = transact(port, state)
+    if not plausible(reply):
+        die(f"{port}: no valid reply (got {reply.hex(' ') if reply else 'nothing'})")
+    save_state(args.state_file, state)
+    print(f"{port}: sent {frame.hex(' ')}  ack {reply.hex(' ')}")
+    print(describe(state))
 
 
 def cmd_probe(args):
@@ -334,6 +381,10 @@ def main():
     p = sub.add_parser("apply", help="re-send the cached record to the MCU")
     p.set_defaults(func=cmd_apply)
 
+    p = sub.add_parser("factory-reset",
+                       help="send the AYANEO factory record (master.restore_factory)")
+    p.set_defaults(func=cmd_factory_reset)
+
     p = sub.add_parser("set", help="change settings and write them to the MCU")
     p.add_argument("--deadzone", choices=["on", "off"],
                    help="stick deadzone (off = full analog resolution near centre)")
@@ -341,8 +392,16 @@ def main():
                    help="left stick sensitivity")
     p.add_argument("--right", type=int, choices=[50, 100, 150],
                    help="right stick sensitivity")
-    p.add_argument("--rumble", type=int, choices=range(0, 16), metavar="0-15",
-                   help="rumble motor level")
+    p.add_argument("--rumble", choices=sorted(LEVEL),
+                   help="rumble motor level (off/low/medium/high)")
+    for side in ("l2", "r2"):
+        p.add_argument(f"--trigger-{side}", choices=sorted(LEVEL),
+                       help=f"{side.upper()} trigger sensitivity")
+    p.add_argument("--gyro-l1", choices=sorted(LEVEL), help="gyro L1 level")
+    p.add_argument("--gyro-l2", choices=sorted(LEVEL), help="gyro L2 level")
+    for btn in ("a", "b", "x", "y", "r1", "r2"):
+        p.add_argument(f"--turbo-{btn}", choices=sorted(TURBO),
+                       help=f"turbo mode for {btn.upper()}")
     p.add_argument("--swap-abxy", choices=["on", "off"])
     p.add_argument("--force", action="store_true",
                    help="send even if nothing changed")
