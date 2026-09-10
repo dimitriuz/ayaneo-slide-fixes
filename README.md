@@ -30,6 +30,10 @@ Full walkthrough: **[docs/BUILD.md](docs/BUILD.md)** ·
 Why it broke: **[docs/ROOT-CAUSE.md](docs/ROOT-CAUSE.md)** ·
 Parameters: **[docs/KERNEL-PARAMS.md](docs/KERNEL-PARAMS.md)**
 
+Also here, unrelated to the backlight: the **gamepad settings protocol**
+(stick deadzone and sensitivity) reverse-engineered and implemented for Linux —
+**[docs/GAMEPAD-PROTOCOL.md](docs/GAMEPAD-PROTOCOL.md)**.
+
 ---
 
 ## Symptoms
@@ -156,10 +160,12 @@ own `amd-staging-drm-next`. No newer, test, dev or beta kernel fixes it.
 ```
 patches/   the two kernel patches (git am format)
 docs/      root cause, build guide, kernel parameters, controller/input
-           findings, and the plan for capturing AYASpace's USB protocol
+           findings, and the reverse-engineered gamepad protocol
 config/    InputPlumber stick-to-mouse mapping
 systemd/   unit that reloads the InputPlumber profile at boot
-scripts/   measure-backlight.sh, measure-stick.py, sticklive.py,
+ghidra/    Dockerfile for the Ghidra + ghidra-cli container used for the RE
+scripts/   gulikit-ctl.py (gamepad settings over the MCU's UART);
+           measure-backlight.sh, measure-stick.py, sticklive.py,
            stickcheck.py (diagnostics); ayaneo-ctl.py (vendor HID channel);
            rebuild.sh, ip-load-profile.sh, winvm.sh
 ```
@@ -172,16 +178,30 @@ that InputPlumber grabs the physical pad exclusively and games only ever see the
 *emulated* target, which by default here is a Valve Steam Deck Controller that
 non-Steam titles may not map. Switching the target to `xb360` fixes most cases.
 
-### Towards a native Linux utility
+### Gamepad settings from Linux
 
-Some AYANEO features are already supported on Linux and need no work: the stick
-ring RGB (`ayaneo:rgb:joystick_rings`) and TDP/power (HHD, `platform_profile`).
-Missing are the **keyboard backlight** and the **gamepad settings** (deadzone,
-per-stick sensitivity, hall stick) — all of which travel over a vendor HID
-channel that is now fully identified. See
-**[docs/CAPTURE-PLAN.md](docs/CAPTURE-PLAN.md)** for how to capture the protocol
-in one Windows session, and `scripts/ayaneo-ctl.py`, which already finds the
-channel and sends reports — only the payloads are missing.
+**The gamepad settings protocol is solved** — see
+**[docs/GAMEPAD-PROTOCOL.md](docs/GAMEPAD-PROTOCOL.md)**. AYASpace does not use
+USB or the EC for these; it talks to a **GuLiKit gamepad MCU over an on-board
+legacy 16550 UART** — I/O `0x3E8` (COM3 on Windows, `/dev/ttyS2` on Linux) at
+115200 8N1. `scripts/gulikit-ctl.py` implements it:
+
+```bash
+sudo install -m755 scripts/gulikit-ctl.py /usr/local/bin/gulikit-ctl
+sudo gulikit-ctl init --factory
+sudo gulikit-ctl probe
+sudo gulikit-ctl set --deadzone off --right 50
+```
+
+It covers the stick deadzone, per-stick sensitivity (50/100/150), rumble level,
+trigger and gyro levels, per-button turbo, and ABXY swap.
+
+Of the rest: the stick ring RGB (`ayaneo:rgb:joystick_rings`) and TDP/power (HHD,
+`platform_profile`) already work on Linux and need nothing. The **keyboard
+backlight** is the one item still outstanding — it *does* go over a vendor HID
+channel, which `scripts/ayaneo-ctl.py` already finds and can send reports on;
+only the payloads are missing. See
+**[docs/CAPTURE-PLAN.md](docs/CAPTURE-PLAN.md)**.
 
 ## Also in this repo: controller / right-stick fixes
 
@@ -195,10 +215,11 @@ Separate from the backlight, three input issues on the same device — see
    the motion comes from Steam's Desktop Layout injected via XTEST, which bypasses
    libinput acceleration. Fixed by driving InputPlumber's own `mouse` target instead,
    which exposes a `speed_pps` knob.
-3. **Stick deadzone far too wide** (**fixed**) — both sticks, 15-25% (left) and
-   30-50% (right) of full scale before anything registers. It turned out to be a
-   *stored setting*, not hardware: turning the deadzone off once in AYASpace on real
-   hardware persists into Linux, taking it to ~0%.
+3. **Stick deadzone far too wide** (**fixed, natively**) — both sticks, 15-25%
+   (left) and 30-50% (right) of full scale before anything registers. It is a
+   *stored setting* in the gamepad MCU, not hardware. It can now be turned off
+   from Linux with `gulikit-ctl set --deadzone off`; no Windows, no VM, no
+   firmware flash. Protocol: **[docs/GAMEPAD-PROTOCOL.md](docs/GAMEPAD-PROTOCOL.md)**.
 
 ## License
 

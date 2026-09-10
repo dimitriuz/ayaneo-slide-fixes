@@ -1,6 +1,16 @@
 # Where the stick settings are stored: the EC is ruled out
 
-Ongoing investigation into where AYASpace stores the stick **deadzone** and
+> **Closed — the answer is in [GAMEPAD-PROTOCOL.md](GAMEPAD-PROTOCOL.md).**
+> The settings travel over an **on-board legacy UART** (`/dev/ttyS2`, I/O
+> `0x3E8`, 115200 8N1) to a GuLiKit gamepad MCU. Not the EC, and not USB — which
+> is exactly why the searches recorded below all came back empty. They were
+> right; they were looking in the wrong places. `scripts/gulikit-ctl.py` now
+> reads and writes these settings from Linux directly.
+>
+> This document is kept because the elimination work is what narrowed the
+> search, and because the EC tooling in it is independently useful.
+
+Investigation into where AYASpace stores the stick **deadzone** and
 **sensitivity**, so they can be changed from Linux. The setting demonstrably
 persists across operating systems, so *something* writes it to non-volatile
 storage on the device.
@@ -125,10 +135,33 @@ Linux: sudo ayaecfull dump control-B
 Everything that differs there is reboot noise. Subtract that set from a real
 settings diff and only the settings should remain.
 
-## If the EC is ruled out too
+## The EC was ruled out — and so was the follow-up plan
 
-Then the write goes to the **controller MCU's own storage** and the USB capture
-simply missed the moment. Re-capture with **all** USBPcap root hubs running
-simultaneously, keep capturing while changing the setting *and* while closing
-AYASpace (the write may happen on apply/exit rather than on the click), and note
-timestamps.
+The plan recorded here was to re-capture USB with every root hub running, on the
+theory that the write went to the controller MCU's own storage and the capture
+had missed the moment.
+
+Half of that was right. The write does go to the controller MCU's own storage —
+the settings live in its non-volatile memory, which is why they survive a reboot
+and cross between Windows and Linux. But no USB capture would ever have shown
+it, because the write does not cross USB at all. It goes out an on-board 16550
+UART at I/O `0x3E8`, invisible to `usbmon`, USBPcap, and every EC dump alike.
+
+What actually resolved it was decompiling `AYASpaceCef.exe` far enough to reach
+the transport, where the binary still carries its own build paths:
+
+```
+D:\devel\windws\AYASpace\AyaHome\utils_aya\Game\ComGamePad\GuLiKitUtils.cpp
+    CGuLiKitUtils::CommSend   ->   "open serial port failed"
+```
+
+Full protocol, record layout, and tooling: **[GAMEPAD-PROTOCOL.md](GAMEPAD-PROTOCOL.md)**.
+
+### The lesson
+
+Four independent exhaustive searches returned clean negatives, and each one was
+reported as a negative rather than explained away. That was correct, and it was
+also not enough: a stack of negatives narrows the search but never names the
+answer. The transport was only ever going to come from the program that speaks
+it. Reading the binary should have come **before** the fourth exhaustive dump of
+a bus that had already said no three times.

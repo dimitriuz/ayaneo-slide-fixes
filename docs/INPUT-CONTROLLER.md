@@ -3,14 +3,26 @@
 Input issues on the **AYANEO SLIDE** (CachyOS handheld image), unrelated to the
 [backlight fixes](../README.md).
 
-Three separate things. **Two are fixable, one is a hardware fault with a good
-workaround** — worth knowing which is which before spending time on it.
+Three separate things, **all three now fixed from Linux**.
 
 | # | Issue | Outcome |
 |---|---|---|
 | 1 | Handheld Daemon crash-looping every 3 s | **Fixed** — config |
 | 2 | Stick pointer far too fast, not tunable | **Fixed** — InputPlumber profile |
-| 3 | **Both** sticks have a large deadzone (L 15-25%, R 30-50%) | **Root cause found, not yet fixed** — a stored setting only AYASpace can write; use the **left** stick meanwhile |
+| 3 | **Both** sticks have a large deadzone (L 15-25%, R 30-50%) | **Fixed** — `scripts/gulikit-ctl.py`, see [GAMEPAD-PROTOCOL.md](GAMEPAD-PROTOCOL.md) |
+
+Issue 3 was a stored setting in the gamepad MCU, exactly as suspected, and for a
+long stretch of this investigation it looked like only AYASpace under Windows
+could change it. It turned out to be reachable over an **on-board legacy UART**
+(`/dev/ttyS2`, I/O `0x3E8`, 115200 8N1):
+
+```bash
+sudo gulikit-ctl set --deadzone off --right 50
+```
+
+The sections below are the trail that led there, including several conclusions
+that were wrong along the way and are marked as such. Skip to
+**[GAMEPAD-PROTOCOL.md](GAMEPAD-PROTOCOL.md)** for the answer.
 
 ---
 
@@ -399,7 +411,13 @@ It is still useful as corroboration: these chips store a deadzone in flash on a 
 scale, typically single digits. Ours behaves like ~50 — six times out of spec, which
 reads as a fault, not a design choice.
 
-### Controller firmware — the one remaining real avenue
+### Controller firmware — an avenue that turned out not to be needed
+
+> **Superseded.** The deadzone is writable directly from Linux over the gamepad
+> MCU's UART — see [GAMEPAD-PROTOCOL.md](GAMEPAD-PROTOCOL.md). There is no
+> reason to reflash controller firmware to change it, and given the caveats
+> below, no reason to reflash at all. This section is kept for the bootloader
+> procedure, which is genuinely useful if a unit is ever actually broken.
 
 The stick behaviour may be a **stored setting** rather than a dead sensor: AYASpace
 under Windows can write a deadzone into the controller, and that would persist into
@@ -513,13 +531,18 @@ Result: AYASpace installs, recognises the machine and shows the joystick pages -
 are dead. AYASpace reaches the hardware through the **EC** via its own kernel driver,
 and a VM has no EC. Passing the gamepad through gives it the pad, not the EC.
 
-That also explains the write path: if the deadzone is written **EC -> controller MCU**,
-it is stored somewhere a controller firmware flash does not erase. Consistent with
-everything observed.
+From this I inferred the write path was **EC -> controller MCU**. That inference
+was wrong. AYASpace does gate its whole UI on reaching the EC — which is why a VM
+shows "check connection" on every page — but the gamepad settings themselves never
+go through the EC. They go out an on-board 16550 UART, and the four exhaustive EC
+searches in [EC-INVESTIGATION.md](EC-INVESTIGATION.md) that came back empty were
+telling the truth.
 
-**So the remaining route is real hardware.** Windows To Go on an external SSD gives a
-genuine EC without touching the internal disk - and the VM is still useful for building
-that drive, since Rufus can write Windows To Go from inside the guest.
+**So the next route looked like real hardware.** Windows To Go on an external SSD
+gives a genuine EC without touching the internal disk - and the VM is still useful
+for building that drive, since Rufus can write Windows To Go from inside the guest.
+That did work, and it is how the setting was first changed. It was not, in the end,
+necessary: see [GAMEPAD-PROTOCOL.md](GAMEPAD-PROTOCOL.md).
 
 Gotchas found while doing this, in case you repeat it:
 
