@@ -73,7 +73,7 @@ controller. `master.*` is the built-in pad.
 | Swap ABXY | UART, byte 8 bit 0x10 | **`gulikit-ctl set --swap-abxy`** |
 | Restore factory defaults | UART, factory record | **`gulikit-ctl factory-reset`** |
 | **Keyboard backlight** | HID feature report `0x41` | **`ayaneo-kbdlight`** |
-| Stick ring LEDs | EC | already works — `ayaneo-platform`, `ayaneo:rgb:joystick_rings` |
+| Stick ring LEDs | EC | already works — [see below](#the-stick-ring-leds-need-no-reverse-engineering) |
 | TDP / power / fan | EC, ACPI | already works — HHD, `platform_profile` |
 | Hardware button remap | `key.*`, not investigated | InputPlumber already remaps these better |
 | Back-key remap | UART bytes 9-12 — **not sent on the SLIDE** | InputPlumber (profile paddles) |
@@ -124,22 +124,52 @@ Built at `0x140194a70`; `color` is split into R/G/B by `0x140194520`, and byte 6
 is assembled by `0x1401945c0` (the `fnIson` bit) and `0x140194600` (the constant
 `4`, which has exactly one caller and is never anything else).
 
-## Effect modes
+## Effect modes — and the two lists that are easy to confuse
 
-From AYASpace's own option list (bundle `9906-*.js`):
+AYASpace has **two** unrelated effect lists in the same bundle, and picking the
+wrong one gets you wrong labels that still look plausible. The keyboard's list
+is built by `KeyboardLightMList`; the LED rings' by `rgbModeList`.
 
-| mode | UI label | notes |
+| value | keyboard (`KeyboardLight.mode[n]`) | stick rings (`rgbModeList`) |
 |---|---|---|
-| 0 | Default | |
-| 1 | breath | |
-| 2 | loop | observably a slow colour cycle |
-| 3 | google | |
-| 4 | Scanning | |
-| 5 | Repple | their spelling of ripple |
-| 6 | always | |
+| 0 | — | Default |
+| 1 | **Monochrome** | Monochrome Breathe |
+| 2 | **Gradient** | RGB Breathe |
+| 3 | **Breathe** | Google Breathe |
+| 4 | — | Radar |
+| 5 | — | Ripple |
+| 6 | — | Monochromatic Always On |
 
-Several entries carry `show:` guards, so any given model exposes a subset —
-which is why the Windows UI shows about five, not seven.
+English labels are from `web/language/en_US.json`; every locale agrees.
+
+Two traps in there:
+
+* `KeyboardLightMList` returns only keys **1 and 2**, but `en_US.json` defines
+  `KeyboardLight.mode[2]` as well, and **mode 3 works on the hardware**. The
+  picker under-reports what the firmware does.
+* `rgbModeList` filters itself by `ProductClass` — `show:!(B||O||T)` where
+  `B = "KUN"`, `O = "AIRPlus"`, `T = "Slide"` — so on a SLIDE the ring picker
+  shows six modes and hides `always`. This is the list a user sees as "about
+  five effects", and it is *not* the keyboard's.
+
+Sending a ring-only value to the keyboard is accepted and does nothing visible:
+**Radar and Ripple are spatial effects**, sweeping across an array of LEDs.
+A single-zone keyboard backlight has nothing to sweep.
+
+## Colour presets
+
+From `KeyboardLightCList` (the non-`FLIP_KB` branch, which is what a SLIDE uses):
+
+```
+002FFF   0FE6FB   27F95B   0800FF   FFEA00   FF0000
+```
+
+`002FFF` is the factory default. The ring presets are separate, from
+`rgbDefColorList`'s `ProductClass==="Slide"` branch:
+
+```
+FFFFFF   FFD000   0091FF   08FF00   FF0000
+```
 
 ## `brightness` is a no-op
 
@@ -172,8 +202,8 @@ sudo install -m755 scripts/ayaneo-kbdlight.py /usr/local/bin/ayaneo-kbdlight
 
 sudo ayaneo-kbdlight                        # print cached state, write nothing
 sudo ayaneo-kbdlight --color 00ff88
-sudo ayaneo-kbdlight --color red --mode breath
-sudo ayaneo-kbdlight --mode scanning
+sudo ayaneo-kbdlight --color red --mode breathe
+sudo ayaneo-kbdlight --mode gradient
 sudo ayaneo-kbdlight --brightness 40        # scales RGB locally
 sudo ayaneo-kbdlight --enable off
 sudo ayaneo-kbdlight --fn on                # Fn indicator light
@@ -183,3 +213,46 @@ sudo ayaneo-kbdlight --raw '41 00 2f ff 01 01 40 5a'
 
 To carry your Windows settings over, read them out of the SQLite config and
 convert: `color` is a plain integer, so `12287` is `#002FFF`.
+
+---
+
+# The stick ring LEDs need no reverse-engineering
+
+`ayaneo-platform` already drives them, and exposes a standard multicolor LED:
+
+```bash
+D=/sys/class/leds/ayaneo:rgb:joystick_rings
+
+cat $D/multi_index                                # red green blue
+echo "255 255 255" | sudo tee $D/multi_intensity  # colour
+echo 128           | sudo tee $D/brightness       # overall level, max 255
+echo 0             | sudo tee $D/brightness       # off
+```
+
+`brightness` scales whatever `multi_intensity` holds, so a colour with
+`brightness 0` is off, not black-on. AYASpace's `RGBIson 0` in `database.db`
+simply means the rings were left switched off — nothing is broken if they start
+dark.
+
+This does not survive a reboot. A udev rule or a small systemd unit writing the
+two sysfs files at boot is enough:
+
+```ini
+# /etc/systemd/system/ayaneo-rings.service   (then: systemctl enable --now ayaneo-rings)
+[Unit]
+Description=Restore AYANEO joystick ring LEDs
+After=multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'echo "255 208 0" > /sys/class/leds/ayaneo:rgb:joystick_rings/multi_intensity'
+ExecStart=/bin/sh -c 'echo 128 > /sys/class/leds/ayaneo:rgb:joystick_rings/brightness'
+
+[Install]
+WantedBy=multi-user.target
+```
+
+The effect *modes* in the table above are AYASpace's own animations, driven from
+software; the kernel LED interface gives a static colour. Animating the rings on
+Linux means writing the sysfs files on a timer, not setting a mode byte.

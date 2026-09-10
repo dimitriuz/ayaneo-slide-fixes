@@ -19,7 +19,7 @@ Report layout
     byte 1   R                         from `color` >> 16
     byte 2   G                         from `color` >> 8
     byte 3   B                         from `color` & 0xff
-    byte 4   mode                      effect, 0-6 (see MODES)
+    byte 4   mode                      1 Monochrome, 2 Gradient, 3 Breathe
     byte 5   enable                    0 = off, 1 = on
     byte 6   0x40 | fnIson             high nibble is a constant 4
     byte 7   0x5A                      terminator
@@ -48,15 +48,22 @@ REPORT_ID = 0x41
 TERMINATOR = 0x5A
 REPORT_LEN = 8
 STATE_FILE = "/var/lib/ayaneo/kbdlight.json"
-# Effect modes, from AYASpace's own UI list (web/frontend, bundle 9906):
-#   [{key:0,label:"Default"},{key:1,label:"breath"},{key:2,label:"loop"},
-#    {key:3,label:"google"},{key:4,label:"Scanning"},{key:5,label:"Repple"},
-#    {key:6,label:"always"}]
-# Several entries carry `show:` guards, so a given model exposes only a subset.
-# "Repple" is their spelling of ripple. Names below are the UI's, lowercased.
-MODES = {"default": 0, "breath": 1, "loop": 2, "google": 3,
-         "scanning": 4, "ripple": 5, "always": 6}
+# Effect modes. AYASpace builds the keyboard's picker from KeyboardLightMList,
+# which offers only keys 1 and 2 -- but en_US.json defines three labels, and all
+# three work on the hardware:
+#     KeyboardLight.mode[0] "Monochrome"  -> 1
+#     KeyboardLight.mode[1] "Gradient"    -> 2
+#     KeyboardLight.mode[2] "Breathe"     -> 3
+# Do not confuse these with rgbModeList, which is the *stick ring* effect list
+# (0 Default, 1 Monochrome Breathe, 2 RGB Breathe, 3 Google Breathe, 4 Radar,
+# 5 Ripple, 6 Monochromatic Always On). Radar and Ripple are spatial effects
+# for the rings; sending 4 or 5 here is accepted and does nothing visible.
+MODES = {"monochrome": 1, "gradient": 2, "breathe": 3}
 MODE_NAMES = {v: k for k, v in MODES.items()}
+
+# The keyboard's own colour presets, from KeyboardLightCList (non-FLIP_KB):
+PRESETS = ["002FFF", "0FE6FB", "27F95B", "0800FF", "FFEA00", "FF0000"]
+
 # AYASpace's own default for this machine, from KeyBoardLightConfig
 DEFAULT = {"color": 0x002FFF, "mode": 1, "enable": 1, "fnIson": 0, "brightness": 100}
 
@@ -139,7 +146,7 @@ def describe(st, report):
     return "\n".join([
         f"colour      #{c:06X}   (R {(c>>16)&0xFF}, G {(c>>8)&0xFF}, B {c&0xFF})",
         f"brightness  {st['brightness']}%  (applied client-side by scaling RGB)",
-        f"mode        {st['mode']} ({MODE_NAMES.get(st['mode'], 'unknown')})",
+        f"mode        {st['mode']} ({MODE_NAMES.get(st['mode'], 'not a keyboard mode')})",
         f"enable      {'on' if st['enable'] else 'off'}",
         f"Fn light    {'on' if st['fnIson'] else 'off'}",
         f"report      {report.hex(' ')}",
@@ -157,7 +164,8 @@ def main():
                     help="colour, hex or a name (red, blue, white, off...)")
     ap.add_argument("--brightness", type=int, metavar="0-100",
                     help="scales RGB locally; the hardware has no brightness field")
-    ap.add_argument("--mode", choices=sorted(MODES), help="effect: " + ", ".join(sorted(MODES)))
+    ap.add_argument("--mode", help="effect: " + ", ".join(sorted(MODES))
+                    + ", or a raw number 0-255")
     ap.add_argument("--enable", choices=["on", "off"], help="backlight on/off")
     ap.add_argument("--fn", choices=["on", "off"], help="Fn key indicator light")
     ap.add_argument("--raw", metavar="HEX",
@@ -188,7 +196,14 @@ def main():
             sys.exit("--brightness must be 0-100")
         st["brightness"] = a.brightness; changed = True
     if a.mode:
-        st["mode"] = MODES[a.mode]; changed = True
+        if a.mode in MODES:
+            st["mode"] = MODES[a.mode]
+        else:
+            try:
+                st["mode"] = int(a.mode, 0) & 0xFF
+            except ValueError:
+                sys.exit(f"--mode must be one of {sorted(MODES)} or a number")
+        changed = True
     if a.enable:
         st["enable"] = 1 if a.enable == "on" else 0; changed = True
     if a.fn:
