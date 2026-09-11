@@ -189,3 +189,151 @@ pub fn colour_editor(ui: &mut Ui, colour: &mut u32, presets: &[u32], open: &mut 
     }
     changed
 }
+
+/// A draggable fan curve.
+///
+/// Drawn by hand rather than with a plotting crate so the handles can be
+/// finger-sized: a plot library's default hit areas are built for a mouse, and
+/// on this panel they are close to unusable. Temperature runs left to right,
+/// speed bottom to top, and the live temperature is marked so the curve can be
+/// read against what the machine is actually doing.
+///
+/// Returns true when a point moved.
+pub fn fan_curve(
+    ui: &mut Ui,
+    points: &mut [(u8, u8)],
+    live_temp: Option<f32>,
+    t_range: (f32, f32),
+    s_range: (f32, f32),
+) -> bool {
+    // Allocate room for the axis labels as well as the plot: painter_at clips
+    // to the rect it is given, so anything drawn below it simply vanishes.
+    const AXIS_H: f32 = 18.0;
+    let h = 210.0;
+    let w = ui.available_width().min(430.0);
+    let (outer, _) = ui.allocate_exact_size(vec2(w, h + AXIS_H), egui::Sense::hover());
+    let rect = egui::Rect::from_min_max(
+        outer.min,
+        egui::pos2(outer.max.x, outer.max.y - AXIS_H),
+    );
+    let p = ui.painter_at(outer);
+    let vis = ui.visuals();
+
+    p.rect_filled(rect, 6.0, vis.extreme_bg_color);
+
+    let to_screen = |t: f32, s: f32| -> egui::Pos2 {
+        let x = rect.left() + (t - t_range.0) / (t_range.1 - t_range.0) * rect.width();
+        let y = rect.bottom() - (s - s_range.0) / (s_range.1 - s_range.0) * rect.height();
+        egui::pos2(x, y)
+    };
+
+    // grid: every 10 C and every 25 %
+    let grid = vis.weak_text_color().gamma_multiply(0.35);
+    let mut t = (t_range.0 / 10.0).ceil() * 10.0;
+    while t <= t_range.1 {
+        let x = to_screen(t, s_range.0).x;
+        p.line_segment(
+            [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
+            egui::Stroke::new(1.0, grid),
+        );
+        // A label centred on the very edge loses half its digits to the clip
+        // rect, so pin the outermost ones inward.
+        let align = if x - rect.left() < 12.0 {
+            egui::Align2::LEFT_TOP
+        } else if rect.right() - x < 24.0 {
+            egui::Align2::RIGHT_TOP
+        } else {
+            egui::Align2::CENTER_TOP
+        };
+        p.text(
+            egui::pos2(x, rect.bottom() + 3.0),
+            align,
+            format!("{t:.0}"),
+            egui::FontId::proportional(11.0),
+            vis.weak_text_color(),
+        );
+        t += 10.0;
+    }
+    for s in [25.0f32, 50.0, 75.0, 100.0] {
+        let y = to_screen(t_range.0, s).y;
+        p.line_segment(
+            [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
+            egui::Stroke::new(1.0, grid),
+        );
+        p.text(
+            egui::pos2(rect.left() + 3.0, y),
+            egui::Align2::LEFT_BOTTOM,
+            format!("{s:.0}%"),
+            egui::FontId::proportional(11.0),
+            vis.weak_text_color(),
+        );
+    }
+
+    // live temperature marker
+    if let Some(lt) = live_temp {
+        if lt >= t_range.0 && lt <= t_range.1 {
+            let x = to_screen(lt, 0.0).x;
+            p.line_segment(
+                [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
+                egui::Stroke::new(2.0, Color32::from_rgb(226, 150, 70)),
+            );
+        }
+    }
+
+    // the curve, flat beyond the end points
+    let line = vis.selection.bg_fill;
+    let mut path: Vec<egui::Pos2> = Vec::new();
+    if let Some(first) = points.first() {
+        path.push(to_screen(t_range.0, first.1 as f32));
+    }
+    for (t, s) in points.iter() {
+        path.push(to_screen(*t as f32, *s as f32));
+    }
+    if let Some(last) = points.last() {
+        path.push(to_screen(t_range.1, last.1 as f32));
+    }
+    for w in path.windows(2) {
+        p.line_segment([w[0], w[1]], egui::Stroke::new(2.5, line));
+    }
+
+    // draggable handles, deliberately larger than they look
+    let mut changed = false;
+    let n = points.len();
+    for i in 0..n {
+        let (t, s) = points[i];
+        let pos = to_screen(t as f32, s as f32);
+        let hit = egui::Rect::from_center_size(pos, Vec2::splat(TOUCH_H));
+        let id = ui.id().with(("fan_curve_pt", i));
+        let resp = ui.interact(hit, id, egui::Sense::drag());
+        let r = if resp.dragged() { 13.0 } else { 10.0 };
+        p.circle_filled(pos, r, line);
+        p.circle_stroke(pos, r, egui::Stroke::new(2.0, vis.extreme_bg_color));
+
+        if resp.dragged() {
+            if let Some(m) = resp.interact_pointer_pos() {
+                let nt = t_range.0
+                    + ((m.x - rect.left()) / rect.width()).clamp(0.0, 1.0)
+                        * (t_range.1 - t_range.0);
+                let ns = s_range.0
+                    + ((rect.bottom() - m.y) / rect.height()).clamp(0.0, 1.0)
+                        * (s_range.1 - s_range.0);
+                // keep points ordered and inside their neighbours, so the curve
+                // stays a function of temperature however it is dragged
+                let lo = if i == 0 { t_range.0 } else { points[i - 1].0 as f32 + 1.0 };
+                let hi = if i + 1 == n { t_range.1 } else { points[i + 1].0 as f32 - 1.0 };
+                points[i].0 = nt.clamp(lo, hi).round() as u8;
+                points[i].1 = ns.clamp(s_range.0, s_range.1).round() as u8;
+                changed = true;
+            }
+        }
+    }
+    p.text(
+        egui::pos2(rect.right(), rect.bottom() + 3.0),
+        egui::Align2::RIGHT_TOP,
+        "°C",
+        egui::FontId::proportional(11.0),
+        vis.weak_text_color(),
+    );
+    ui.add_space(10.0);
+    changed
+}

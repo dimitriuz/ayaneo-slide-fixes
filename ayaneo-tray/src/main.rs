@@ -133,6 +133,28 @@ fn restore() -> Result<()> {
             }
         }
     }
+    // The fan is handed back to the EC whenever the helper stops, so a chosen
+    // curve or duty has to be re-established rather than assumed to survive.
+    match s.fan_mode.as_deref() {
+        Some("curve") => {
+            let spec = s
+                .fan_curve
+                .iter()
+                .map(|(t, p)| format!("{t}:{p}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            match helper::request(&format!("fan curve {spec}")) {
+                Ok(_) => println!("fan: curve"),
+                Err(e) => eprintln!("fan: {e}"),
+            }
+        }
+        Some("manual") => match helper::request(&format!("fan manual {}", s.fan_pct)) {
+            Ok(_) => println!("fan: manual {}%", s.fan_pct),
+            Err(e) => eprintln!("fan: {e}"),
+        },
+        _ => {}
+    }
+
     // SMU limits are volatile, so restore covers them too when a helper is up.
     if let Some(w) = s.tdp_watts {
         match helper::request(&format!("tdp {w} {w} {w}")) {

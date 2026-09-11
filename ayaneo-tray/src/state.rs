@@ -25,6 +25,18 @@ pub struct Settings {
     /// compositor reports is rarely what a thumb wants.
     #[serde(default = "default_scale")]
     pub ui_scale: f32,
+    /// Fan curve points, (temperature C, speed %).
+    #[serde(default = "crate::fan::default_curve")]
+    pub fan_curve: Vec<(u8, u8)>,
+    /// "auto", "manual" or "curve"; re-applied by --restore.
+    #[serde(default)]
+    pub fan_mode: Option<String>,
+    #[serde(default = "default_fan_pct")]
+    pub fan_pct: u8,
+}
+
+fn default_fan_pct() -> u8 {
+    45
 }
 
 fn default_scale() -> f32 {
@@ -40,6 +52,9 @@ impl Default for Settings {
             power_profile: None,
             tdp_watts: None,
             ui_scale: default_scale(),
+            fan_curve: crate::fan::default_curve(),
+            fan_mode: None,
+            fan_pct: default_fan_pct(),
         }
     }
 }

@@ -94,15 +94,50 @@ fn handle(stream: UnixStream) {
                 Ok(p) => crate::fan::set_manual(p, true).map(|_| format!("manual {p}%")),
                 Err(_) => Err(anyhow::anyhow!("fan manual needs a percentage")),
             },
+            // "fan curve 45:20,55:30,..."
+            ["fan", "curve", spec] => {
+                let mut pts = Vec::new();
+                let mut bad = false;
+                for part in spec.split(',') {
+                    match part.split_once(':') {
+                        Some((t, s)) => match (t.parse::<u8>(), s.parse::<u8>()) {
+                            (Ok(t), Ok(s)) => pts.push((t, s)),
+                            _ => bad = true,
+                        },
+                        None => bad = true,
+                    }
+                }
+                if bad {
+                    Err(anyhow::anyhow!("curve points must be temp:speed, comma separated"))
+                } else {
+                    let n = pts.len();
+                    crate::fan::set_curve(pts).map(|_| format!("curve, {n} points"))
+                }
+            }
             ["fan", "status"] => crate::fan::status().map(|st| {
+                let (mode, target) = match &st.mode {
+                    crate::fan::Mode::Auto => ("auto".to_string(), String::new()),
+                    crate::fan::Mode::Manual(p) => ("manual".to_string(), format!(" target={p}")),
+                    crate::fan::Mode::Curve(pts) => (
+                        "curve".to_string(),
+                        format!(
+                            " curve={}",
+                            pts.iter()
+                                .map(|(t, s)| format!("{t}:{s}"))
+                                .collect::<Vec<_>>()
+                                .join(",")
+                        ),
+                    ),
+                };
                 format!(
-                    "supported={} mode=0x{:02x} duty={} manual={} tripped={} temp={}",
+                    "supported={} mode={} ec=0x{:02x} duty={} tripped={} temp={}{}",
                     st.supported,
+                    mode,
                     st.mode_raw,
                     st.duty_raw,
-                    st.manual,
                     st.tripped,
-                    st.temp_c.map(|t| format!("{t:.1}")).unwrap_or_else(|| "?".into())
+                    st.temp_c.map(|t| format!("{t:.1}")).unwrap_or_else(|| "?".into()),
+                    target
                 )
             }),
             [] => continue,

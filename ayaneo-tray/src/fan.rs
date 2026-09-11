@@ -31,8 +31,8 @@
 //!   * duties below MIN_MANUAL_PCT are refused unless explicitly forced.
 
 use anyhow::{bail, Result};
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use crate::ec;
@@ -48,9 +48,57 @@ pub const FORCE_AUTO_C: f32 = 85.0;
 /// actually bites.
 pub const MIN_MANUAL_PCT: u8 = 20;
 
-static MANUAL_PCT: AtomicU8 = AtomicU8::new(0);
-static MANUAL_ON: AtomicBool = AtomicBool::new(false);
+/// Above this a curve is overridden to full speed rather than trusted.
+const CURVE_PANIC_C: f32 = 80.0;
+/// If it still climbs this far the fan is not coping; hand back to the EC.
+const GIVE_UP_C: f32 = 90.0;
+
+/// How the fan is being driven.
+#[derive(Clone, PartialEq)]
+pub enum Mode {
+    /// The EC's own curve. Nothing of ours is running.
+    Auto,
+    /// A fixed duty.
+    Manual(u8),
+    /// (temperature °C, speed %) points, sorted by temperature, applied by the
+    /// monitor thread. The EC has no notion of a curve - AYASpace implements
+    /// its own the same way, in CFanAuto::Update.
+    Curve(Vec<(u8, u8)>),
+}
+
+fn mode() -> &'static Mutex<Mode> {
+    static M: OnceLock<Mutex<Mode>> = OnceLock::new();
+    M.get_or_init(|| Mutex::new(Mode::Auto))
+}
+
 static TRIPPED: AtomicBool = AtomicBool::new(false);
+
+/// A sane starting curve for a 7840U handheld: quiet until it matters.
+pub fn default_curve() -> Vec<(u8, u8)> {
+    vec![(45, 20), (55, 30), (65, 45), (75, 70), (85, 100)]
+}
+
+/// Linear interpolation between points; flat outside the ends.
+pub fn curve_speed(points: &[(u8, u8)], temp: f32) -> u8 {
+    if points.is_empty() {
+        return 50;
+    }
+    if temp <= points[0].0 as f32 {
+        return points[0].1;
+    }
+    if temp >= points[points.len() - 1].0 as f32 {
+        return points[points.len() - 1].1;
+    }
+    for w in points.windows(2) {
+        let (t0, s0) = (w[0].0 as f32, w[0].1 as f32);
+        let (t1, s1) = (w[1].0 as f32, w[1].1 as f32);
+        if temp >= t0 && temp <= t1 {
+            let f = if (t1 - t0).abs() < f32::EPSILON { 0.0 } else { (temp - t0) / (t1 - t0) };
+            return (s0 + (s1 - s0) * f).round() as u8;
+        }
+    }
+    points[points.len() - 1].1
+}
 
 fn dmi(field: &str) -> String {
     std::fs::read_to_string(format!("/sys/class/dmi/id/{field}"))
@@ -103,8 +151,47 @@ pub fn cpu_temp_c() -> Option<f32> {
 pub fn set_auto() -> Result<()> {
     model_or_bail()?;
     ec::write(MODE.0, MODE.1, MODE_AUTO)?;
-    MANUAL_ON.store(false, Ordering::SeqCst);
+    *mode().lock().unwrap() = Mode::Auto;
     TRIPPED.store(false, Ordering::SeqCst);
+    Ok(())
+}
+
+/// Write a duty without touching the stored mode. Used by the monitor thread.
+fn write_duty(pct: u8) -> Result<()> {
+    let duty = ((pct.min(100) as u32 * 255) / 100) as u8;
+    ec::write(MODE.0, MODE.1, MODE_MANUAL)?;
+    ec::write(DUTY.0, DUTY.1, duty)
+}
+
+pub fn set_curve(points: Vec<(u8, u8)>) -> Result<()> {
+    model_or_bail()?;
+    if points.len() < 2 {
+        bail!("a curve needs at least two points");
+    }
+    if points.len() > 8 {
+        bail!("at most 8 points");
+    }
+    for (t, s) in &points {
+        if *s < MIN_MANUAL_PCT || *s > 100 {
+            bail!("speed {s}% out of range {MIN_MANUAL_PCT}-100");
+        }
+        if *t > 105 {
+            bail!("temperature {t}C out of range");
+        }
+    }
+    let mut pts = points;
+    pts.sort_by_key(|(t, _)| *t);
+    if pts.windows(2).any(|w| w[0].0 == w[1].0) {
+        bail!("two points share a temperature");
+    }
+    if TRIPPED.load(Ordering::SeqCst) {
+        bail!("thermal failsafe has tripped; send 'fan auto' to clear it");
+    }
+    // Apply immediately so the change is felt, then let the monitor maintain it.
+    if let Some(t) = cpu_temp_c() {
+        write_duty(curve_speed(&pts, t))?;
+    }
+    *mode().lock().unwrap() = Mode::Curve(pts);
     Ok(())
 }
 
@@ -124,19 +211,16 @@ pub fn set_manual(pct: u8, force_low: bool) -> Result<()> {
              send 'fan auto' to clear it"
         );
     }
-    let duty = ((pct as u32 * 255) / 100) as u8;
     // mode first, then duty: the EC ignores duty writes while in auto
-    ec::write(MODE.0, MODE.1, MODE_MANUAL)?;
-    ec::write(DUTY.0, DUTY.1, duty)?;
-    MANUAL_PCT.store(pct, Ordering::SeqCst);
-    MANUAL_ON.store(true, Ordering::SeqCst);
+    write_duty(pct)?;
+    *mode().lock().unwrap() = Mode::Manual(pct);
     Ok(())
 }
 
 pub struct Status {
     pub mode_raw: u8,
     pub duty_raw: u8,
-    pub manual: bool,
+    pub mode: Mode,
     pub tripped: bool,
     pub temp_c: Option<f32>,
     pub supported: bool,
@@ -146,7 +230,7 @@ pub fn status() -> Result<Status> {
     Ok(Status {
         mode_raw: ec::read(MODE.0, MODE.1)?,
         duty_raw: ec::read(DUTY.0, DUTY.1)?,
-        manual: MANUAL_ON.load(Ordering::SeqCst),
+        mode: mode().lock().unwrap().clone(),
         tripped: TRIPPED.load(Ordering::SeqCst),
         temp_c: cpu_temp_c(),
         supported: model_supported(),
@@ -197,32 +281,57 @@ pub fn start_monitor() {
     }
     std::thread::spawn(|| loop {
         std::thread::sleep(Duration::from_secs(2));
-        if !MANUAL_ON.load(Ordering::SeqCst) {
+        let current = mode().lock().unwrap().clone();
+        if current == Mode::Auto {
             continue;
         }
-        match cpu_temp_c() {
-            Some(t) if t >= FORCE_AUTO_C => {
-                // Latch: do not flap back into manual on its own. Clearing
-                // requires an explicit 'fan auto'.
-                TRIPPED.store(true, Ordering::SeqCst);
-                MANUAL_ON.store(false, Ordering::SeqCst);
-                let _ = ec::write(MODE.0, MODE.1, MODE_AUTO);
-                eprintln!("fan: {t:.0}C >= {FORCE_AUTO_C:.0}C, forced EC automatic control");
-            }
-            Some(_) => {
-                // Re-assert, in case anything else has touched the registers.
-                let pct = MANUAL_PCT.load(Ordering::SeqCst);
-                let duty = ((pct as u32 * 255) / 100) as u8;
-                let _ = ec::write(MODE.0, MODE.1, MODE_MANUAL);
-                let _ = ec::write(DUTY.0, DUTY.1, duty);
-            }
-            None => {
-                // Lost the temperature sensor: we can no longer supervise, so
-                // hand control back rather than hold a duty blind.
-                MANUAL_ON.store(false, Ordering::SeqCst);
-                let _ = ec::write(MODE.0, MODE.1, MODE_AUTO);
-                eprintln!("fan: CPU temperature unreadable, restored EC automatic control");
-            }
+        let Some(t) = cpu_temp_c() else {
+            // Lost the sensor: we can no longer supervise, so hand control back
+            // rather than hold a duty blind.
+            *mode().lock().unwrap() = Mode::Auto;
+            let _ = ec::write(MODE.0, MODE.1, MODE_AUTO);
+            eprintln!("fan: CPU temperature unreadable, restored EC automatic control");
+            continue;
+        };
+
+        if t >= GIVE_UP_C {
+            // Full speed did not hold it. Something is wrong; the EC's own
+            // curve is a better bet than ours, and this latches.
+            TRIPPED.store(true, Ordering::SeqCst);
+            *mode().lock().unwrap() = Mode::Auto;
+            let _ = ec::write(MODE.0, MODE.1, MODE_AUTO);
+            eprintln!("fan: {t:.0}C >= {GIVE_UP_C:.0}C, restored EC automatic control");
+            continue;
         }
+
+        let target = match &current {
+            Mode::Auto => continue,
+            // A fixed duty is never allowed to stay low while hot.
+            Mode::Manual(p) => {
+                if t >= FORCE_AUTO_C {
+                    TRIPPED.store(true, Ordering::SeqCst);
+                    *mode().lock().unwrap() = Mode::Auto;
+                    let _ = ec::write(MODE.0, MODE.1, MODE_AUTO);
+                    eprintln!("fan: {t:.0}C >= {FORCE_AUTO_C:.0}C, restored EC automatic control");
+                    continue;
+                }
+                *p
+            }
+            // A curve is expected to raise the fan itself, so override it to
+            // full rather than tearing control away - handing back mid-game
+            // because a curve was a few percent conservative would be worse
+            // than simply running the fan flat out.
+            Mode::Curve(points) => {
+                let s = curve_speed(points, t);
+                if t >= CURVE_PANIC_C {
+                    s.max(100)
+                } else {
+                    s
+                }
+            }
+        };
+        // Re-assert every tick: cheap, and it covers anything else touching
+        // the registers.
+        let _ = write_duty(target);
     });
 }

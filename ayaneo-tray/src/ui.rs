@@ -11,7 +11,9 @@
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
-use crate::widgets::{colour_editor, hint, row, segmented, slider, toggle, unavailable, wide_button};
+use crate::widgets::{
+    colour_editor, fan_curve, hint, row, segmented, slider, toggle, unavailable, wide_button,
+};
 
 const SENS_LABELS: [&str; 3] = ["50", "100", "150"];
 use crate::worker::{Job, Msg, Worker};
@@ -70,9 +72,10 @@ pub struct App {
     profiles: Vec<String>,
     profile: Option<String>,
     helper_up: bool,
-    fan_manual: bool,
-    fan_pct: u8,
+    /// 0 auto, 1 manual, 2 curve
+    fan_mode: u8,
     fan_note: String,
+    curve_dirty: Option<Instant>,
     kbd_custom: bool,
     rings_custom: bool,
     style_applied: bool,
@@ -119,9 +122,9 @@ impl App {
             profiles: power::available(),
             profile: power::current(),
             helper_up: false,
-            fan_manual: false,
-            fan_pct: 45,
+            fan_mode: 0,
             fan_note: String::new(),
+            curve_dirty: None,
             // same debug spirit as AYANEO_TRAY_TAB: lets the expanded editor be
             // opened and checked without clicking into it
             kbd_custom: std::env::var("AYANEO_TRAY_CUSTOM").is_ok(),
@@ -138,6 +141,10 @@ impl App {
 
     pub fn attach_worker(&mut self, w: Worker) {
         self.worker = Some(w);
+    }
+
+    fn curve_spec(points: &[(u8, u8)]) -> String {
+        points.iter().map(|(t, s)| format!("{t}:{s}")).collect::<Vec<_>>().join(",")
     }
 
     /// Queue device work. Never blocks the render thread.
@@ -193,6 +200,19 @@ impl App {
             if now.duration_since(t) > DEBOUNCE {
                 self.dirty_rings = None;
                 self.submit(Job::ApplyRings(self.settings.rings));
+                touched = true;
+            }
+        }
+        // Dragging a curve point fires every frame; only send once it settles.
+        if let Some(t) = self.curve_dirty {
+            if now.duration_since(t) > DEBOUNCE {
+                self.curve_dirty = None;
+                if self.fan_mode == 2 {
+                    self.submit(Job::Helper(format!(
+                        "fan curve {}",
+                        Self::curve_spec(&self.settings.fan_curve)
+                    )));
+                }
                 touched = true;
             }
         }
@@ -454,35 +474,75 @@ impl App {
                 );
             }
             2 => {
-                let cur_fan = self.fan_manual;
+                let cur = self.fan_mode;
                 let picked = row(ui, "Control", |ui| {
-                    segmented(ui, cur_fan, &[(false, "Auto"), (true, "Manual")])
+                    segmented(
+                        ui,
+                        cur,
+                        &[(0u8, "Auto"), (1, "Manual"), (2, "Curve")],
+                    )
                 });
-                if let Some(manual) = picked {
-                    let req = if manual {
-                        format!("fan manual {}", self.fan_pct)
-                    } else {
-                        "fan auto".to_string()
+                if let Some(m) = picked {
+                    self.fan_mode = m;
+                    let req = match m {
+                        1 => format!("fan manual {}", self.settings.fan_pct),
+                        2 => format!("fan curve {}", Self::curve_spec(&self.settings.fan_curve)),
+                        _ => "fan auto".to_string(),
                     };
                     self.submit(Job::Helper(req));
-                    self.fan_manual = manual;
-                    self.status = if manual {
-                        format!("Fan: manual {}%…", self.fan_pct)
-                    } else {
-                        "Fan: automatic…".into()
-                    };
+                    self.settings.fan_mode =
+                        Some(["auto", "manual", "curve"][m as usize].to_string());
+                    let _ = state::save(&self.settings);
+                    self.status = format!("Fan: {}…", ["automatic", "manual", "curve"][m as usize]);
                 }
-                let manual_now = self.fan_manual;
-                let mut pct = self.fan_pct;
-                let commit = row(ui, "Speed", |ui| {
-                    let s = ui.add_enabled_ui(manual_now, |ui| slider(ui, &mut pct, 20..=100, " %")).inner;
-                    s.drag_stopped() || s.lost_focus()
-                });
-                self.fan_pct = pct;
-                if commit && manual_now {
-                    self.submit(Job::Helper(format!("fan manual {}", self.fan_pct)));
-                    self.status = format!("Fan: manual {}%…", self.fan_pct);
+
+                if self.fan_mode == 1 {
+                    let mut pct = self.settings.fan_pct;
+                    let commit = row(ui, "Speed", |ui| {
+                        let s = ui.add_enabled_ui(true, |ui| slider(ui, &mut pct, 20..=100, " %")).inner;
+                        s.drag_stopped() || s.lost_focus()
+                    });
+                    self.settings.fan_pct = pct;
+                    if commit {
+                        self.submit(Job::Helper(format!("fan manual {pct}")));
+                        let _ = state::save(&self.settings);
+                        self.status = format!("Fan: manual {pct}%…");
+                    }
+                    hint(
+                        ui,
+                        "Speed is the PWM duty cycle — the share of time the fan is driven, \
+                         which is what the hardware actually takes. It is commanded, not \
+                         measured: this machine has no tachometer.",
+                    );
+                } else if self.fan_mode == 2 {
+                    let live = self.telemetry.temps.iter().find(|(n, _)| n == "CPU").map(|(_, v)| *v);
+                    let mut pts = self.settings.fan_curve.clone();
+                    let moved = fan_curve(ui, &mut pts, live, (40.0, 95.0), (20.0, 100.0));
+                    if moved {
+                        self.settings.fan_curve = pts;
+                        self.curve_dirty = Some(Instant::now());
+                    }
+                    if let Some(t) = live {
+                        let target = crate::fan::curve_speed(&self.settings.fan_curve, t);
+                        row(ui, "Now", |ui| {
+                            ui.label(
+                                egui::RichText::new(format!("{t:.0} °C  ->  {target} %")).size(17.0),
+                            );
+                        });
+                    }
+                    if wide_button(ui, "Reset curve").clicked() {
+                        self.settings.fan_curve = crate::fan::default_curve();
+                        self.curve_dirty = Some(Instant::now());
+                    }
+                    hint(
+                        ui,
+                        "Drag a point to reshape the curve. The orange line is the current \
+                         CPU temperature. Speeds below 20% are refused, and the helper \
+                         applies the curve itself every two seconds — the EC has no curve \
+                         of its own.",
+                    );
                 }
+
                 if !self.fan_note.is_empty() {
                     ui.label(
                         egui::RichText::new(&self.fan_note)
@@ -491,14 +551,9 @@ impl App {
                 }
                 hint(
                     ui,
-                    "Speed is the PWM duty cycle — the share of time the fan is driven, \
-                     which is what the hardware actually takes. It is what is commanded, \
-                     not what is measured: this machine has no tachometer.",
-                );
-                hint(
-                    ui,
-                    "Above 85 °C the helper forces automatic control and latches until you \
-                     press Auto, and the fan is handed back whenever the helper stops.",
+                    "Above 90 °C the helper hands the fan back to the EC and latches until \
+                     you press Auto; in curve mode it first forces full speed at 80 °C \
+                     rather than taking control away mid-game.",
                 );
             }
             _ => {
@@ -631,7 +686,13 @@ impl eframe::App for App {
                 Msg::HelperState(up, s) => {
                     self.helper_up = up;
                     if up {
-                        self.fan_manual = s.contains("manual=true");
+                        self.fan_mode = if s.contains("mode=curve") {
+                            2
+                        } else if s.contains("mode=manual") {
+                            1
+                        } else {
+                            0
+                        };
                         self.fan_note = if s.contains("tripped=true") {
                             "Thermal failsafe tripped — press Auto to clear.".into()
                         } else {
