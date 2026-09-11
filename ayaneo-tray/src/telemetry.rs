@@ -7,6 +7,10 @@ pub struct Telemetry {
     pub battery_pct: Option<u32>,
     pub battery_status: Option<String>,
     pub power_now_w: Option<f32>,
+    /// APU package power, as the SoC itself reports it. Not a limit - but it is
+    /// measured rather than remembered, so under load it shows where the
+    /// ceiling actually is.
+    pub apu_power_w: Option<f32>,
 }
 
 fn read_trim(p: impl AsRef<std::path::Path>) -> Option<String> {
@@ -32,6 +36,14 @@ pub fn read() -> Telemetry {
         for h in entries {
             let Some(name) = read_trim(h.join("name")) else { continue };
             let Some(label) = pretty(&name) else { continue };
+            if name == "amdgpu" {
+                // power1_input is instantaneous and power1_average is a rolling
+                // mean; APUs expose one or the other depending on the SMU.
+                t.apu_power_w = read_trim(h.join("power1_input"))
+                    .or_else(|| read_trim(h.join("power1_average")))
+                    .and_then(|s| s.parse::<f32>().ok())
+                    .map(|uw| uw / 1_000_000.0);
+            }
             if let Some(v) = read_trim(h.join("temp1_input")).and_then(|s| s.parse::<f32>().ok()) {
                 // hwmon reports millidegrees; 0 means the sensor is not wired up
                 if v > 0.0 {

@@ -114,6 +114,9 @@ fn print_status() {
     for (n, v) in &t.temps {
         print!(" {n} {v:.0}C");
     }
+    if let Some(w) = t.apu_power_w {
+        print!("  APU {w:.1}W");
+    }
     if let Some(p) = t.battery_pct {
         print!("  battery {p}%");
     }

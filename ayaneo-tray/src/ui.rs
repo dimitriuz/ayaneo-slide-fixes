@@ -96,6 +96,10 @@ pub struct App {
     /// of a session, not a repaint.
     conflicts: Vec<&'static conflicts::Daemon>,
     last_conflict_scan: Instant,
+    /// What the SMU says its limits are, or why they could not be read.
+    /// `None` until the first poll comes back.
+    tdp_read: Option<Result<(u32, u32, u32), String>>,
+    last_tdp_poll: Instant,
     profile: Option<String>,
     helper_up: bool,
     /// 0 auto, 1 manual, 2 curve
@@ -154,6 +158,8 @@ impl App {
             last_ip_poll: Instant::now() - Duration::from_secs(60),
             conflicts: conflicts::scan(),
             last_conflict_scan: Instant::now(),
+            tdp_read: None,
+            last_tdp_poll: Instant::now() - Duration::from_secs(60),
             profile: power::current(),
             helper_up: false,
             fan_mode: 0,
@@ -496,13 +502,54 @@ impl App {
                     self.settings.tdp_watts = Some(w);
                     let _ = state::save(&self.settings);
                     self.status = format!("TDP {w} W…");
+                    // Anything showing is now stale, and the next poll is up to
+                    // five seconds away.
+                    self.last_tdp_poll = Instant::now() - Duration::from_secs(4);
                 }
-                hint(
-                    ui,
-                    "Sets STAPM and the fast/slow limits together via ryzenadj. SMU limits \
-                     are volatile and re-applied at login. This shows what was last set — \
-                     reading them back needs the ryzen_smu module.",
-                );
+                hint(ui, "Sets STAPM and the fast/slow limits together, via ryzenadj.");
+
+                // The buttons above say what was asked for. These say what the
+                // hardware is doing, which is a different thing on a machine
+                // where something else also writes the limits.
+                match &self.tdp_read {
+                    Some(Ok((stapm, fast, slow))) => {
+                        let (stapm, fast, slow) = (*stapm, *fast, *slow);
+                        row(ui, "In force", |ui| {
+                            ui.label(egui::RichText::new(format!("{stapm} W")).size(19.0));
+                        });
+                        hint(ui, &format!("Read from the SMU. Fast {fast} W, slow {slow} W."));
+                        if self.settings.tdp_watts.is_some_and(|w| w != stapm) {
+                            warn(
+                                ui,
+                                "That is not what was set here — something else has \
+                                 changed it since.",
+                            );
+                        }
+                    }
+                    Some(Err(e)) => {
+                        if let Some(w) = self.telemetry.apu_power_w {
+                            row(ui, "APU power", |ui| {
+                                ui.label(egui::RichText::new(format!("{w:.1} W")).size(19.0));
+                            });
+                            hint(
+                                ui,
+                                "Measured, not the limit — but under load it settles at \
+                                 whatever the limit actually is.",
+                            );
+                        }
+                        hint(ui, &format!("The limit itself cannot be read here: {e}."));
+                        hint(
+                            ui,
+                            "ryzenadj reads it out of a table in RAM, which \
+                             CONFIG_STRICT_DEVMEM blocks. Installing the ryzen_smu module \
+                             (AUR: ryzen_smu-dkms-git) gives it another way in, and this \
+                             will then show the real limit.",
+                        );
+                    }
+                    None => {
+                        hint(ui, "Reading the limit back…");
+                    }
+                }
                 self.conflict_warning(ui, conflicts::Over::Tdp, "overwrite what you set here");
             }
         }
@@ -610,6 +657,11 @@ impl App {
                 let st = self.telemetry.battery_status.clone().unwrap_or_default();
                 row(ui, "Battery", |ui| {
                     ui.label(egui::RichText::new(format!("{p} %  {st}")).size(19.0));
+                });
+            }
+            if let Some(w) = self.telemetry.apu_power_w {
+                row(ui, "APU", |ui| {
+                    ui.label(egui::RichText::new(format!("{w:.1} W")).size(19.0));
                 });
             }
             if let Some(w) = self.telemetry.power_now_w {
@@ -914,6 +966,15 @@ impl eframe::App for App {
             self.last_ip_poll = Instant::now();
             self.submit(Job::PollIp);
         }
+        // Only while the page that shows it is open: it shells out to ryzenadj.
+        if self.tab == Tab::Power
+            && self.sub[Tab::Power.index()] == 1
+            && self.helper_up
+            && self.last_tdp_poll.elapsed() > Duration::from_secs(5)
+        {
+            self.last_tdp_poll = Instant::now();
+            self.submit(Job::PollTdp);
+        }
         if self.last_conflict_scan.elapsed() > Duration::from_secs(15) {
             self.last_conflict_scan = Instant::now();
             self.conflicts = conflicts::scan();
@@ -941,6 +1002,7 @@ impl eframe::App for App {
                     }
                 }
                 Msg::IpState(st) => self.ip = st,
+                Msg::TdpLimits(r) => self.tdp_read = Some(r),
                 Msg::HelperState(up, s) => {
                     self.helper_up = up;
                     if up {

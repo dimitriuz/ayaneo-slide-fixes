@@ -57,6 +57,48 @@ fn set_tdp(stapm: u32, fast: u32, slow: u32) -> Result<()> {
     Ok(())
 }
 
+/// Read the limits back out of the SMU.
+///
+/// Returns them in watts as "stapm fast slow". This is the only way to answer
+/// "what is the TDP right now" rather than "what did this app last ask for" -
+/// anything else on the system can have set it since, and several things do.
+///
+/// It needs ryzenadj's power metrics table, which lives in ordinary RAM and is
+/// therefore unreachable through /dev/mem on a kernel built with
+/// CONFIG_STRICT_DEVMEM (most of them). The ryzen_smu module is what makes it
+/// readable; without it ryzenadj says so on stderr and exits 0 anyway, so the
+/// absence of the values is what has to be detected, not the exit status.
+fn tdp_info() -> Result<String> {
+    let out = std::process::Command::new("ryzenadj")
+        .arg("--info")
+        .output()
+        .context("running ryzenadj (is it installed?)")?;
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // Lines look like: "| STAPM LIMIT | 15.000 | stapm-limit |"
+    let field = |name: &str| -> Option<f32> {
+        text.lines()
+            .find(|l| l.contains(name))
+            .and_then(|l| l.split('|').nth(2))
+            .and_then(|v| v.trim().parse::<f32>().ok())
+    };
+    match (field("STAPM LIMIT"), field("PPT LIMIT FAST"), field("PPT LIMIT SLOW")) {
+        (Some(a), Some(b), Some(c)) => Ok(format!("{a:.0} {b:.0} {c:.0}")),
+        _ => {
+            let why = text
+                .lines()
+                .find(|l| l.contains("Unable to"))
+                .unwrap_or("ryzenadj returned no limits")
+                .trim();
+            bail!("{why}")
+        }
+    }
+}
+
 fn set_profile(name: &str) -> Result<()> {
     // Only ever one of the values the kernel itself advertises.
     let choices = std::fs::read_to_string(crate::power::CHOICES).unwrap_or_default();
@@ -81,6 +123,7 @@ fn handle(stream: UnixStream) {
                 (Ok(x), Ok(y), Ok(z)) => set_tdp(x, y, z).map(|_| "ok".into()),
                 _ => Err(anyhow::anyhow!("tdp needs three integers, in watts")),
             },
+            ["tdp", "info"] => tdp_info(),
             ["profile", name] => set_profile(name).map(|_| "ok".into()),
             ["fan", "auto"] => {
                 // also clears a latched thermal trip

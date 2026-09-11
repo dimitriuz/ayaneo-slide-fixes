@@ -27,6 +27,8 @@ pub enum Job {
     ApplyRings(rings::Rings),
     Helper(String),
     PollHelper,
+    /// Read the SMU's actual power limits back.
+    PollTdp,
     /// InputPlumber: poll state, or act on it.
     PollIp,
     /// Load a profile, then re-apply the saved pointer speed it resets.
@@ -48,6 +50,8 @@ pub enum Msg {
     Devices(crate::hw::Devices),
     /// Fresh InputPlumber state.
     IpState(crate::inputplumber::Status),
+    /// Result of PollTdp: the limits in watts, or why they could not be read.
+    TdpLimits(Result<(u32, u32, u32), String>),
 }
 
 fn key(job: &Job) -> &'static str {
@@ -58,6 +62,7 @@ fn key(job: &Job) -> &'static str {
         Job::ApplyRings(_) => "rings",
         Job::Helper(_) => "helper",
         Job::PollHelper => "poll",
+        Job::PollTdp => "polltdp",
         Job::PollIp => "pollip",
         Job::IpProfile(..) => "ipprofile",
         Job::IpMouseSpeed(_) => "ipspeed",
@@ -150,6 +155,16 @@ fn run(
                 Ok(s) => Msg::HelperState(true, s),
                 Err(_) => Msg::HelperState(false, String::new()),
             },
+            Job::PollTdp => Msg::TdpLimits(match helper::request("tdp info") {
+                Ok(s) => {
+                    let v: Vec<u32> = s.split_whitespace().flat_map(str::parse).collect();
+                    match v.as_slice() {
+                        [a, b, c] => Ok((*a, *b, *c)),
+                        _ => Err(format!("unexpected reply {s:?}")),
+                    }
+                }
+                Err(e) => Err(e.to_string()),
+            }),
             Job::PollIp => Msg::IpState(crate::inputplumber::status()),
             Job::IpProfile(path, speed) => match crate::inputplumber::load_profile(&path) {
                 Ok(()) => {
