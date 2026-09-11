@@ -5,6 +5,7 @@
 //! report, and the ring LEDs over sysfs. See the docs/ directory of
 //! ayaneo-slide-fixes for how each protocol was established.
 
+mod conflicts;
 mod ec;
 mod fan;
 mod gamepad;
@@ -60,6 +61,17 @@ fn print_status() {
     line("gamepad", &d.gamepad, &d.gamepad_err);
     line("keyboard", &d.kbd, &d.kbd_err);
     line("rings", &d.rings, &d.rings_err);
+
+    // Anything here can silently undo a setting made in the GUI, so name it
+    // where someone reporting "it did not stick" will see it.
+    let others = conflicts::scan();
+    if !others.is_empty() {
+        println!();
+        println!("also running:");
+        for c in others {
+            println!("  {:14} {}", c.name, c.effect);
+        }
+    }
 
     println!();
     println!("gamepad record  {}", state::hex(&rec.0));

@@ -12,12 +12,13 @@ use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 use crate::widgets::{
-    colour_editor, fan_curve, hint, row, segmented, slider, toggle, unavailable, wide_button,
+    colour_editor, fan_curve, hint, row, segmented, slider, toggle, unavailable, warn,
+    wide_button,
 };
 
 const SENS_LABELS: [&str; 3] = ["50", "100", "150"];
 use crate::worker::{Job, Msg, Worker};
-use crate::{gamepad, hw, kbdlight, power, rings, state, telemetry, tray::TrayMsg};
+use crate::{conflicts, gamepad, hw, kbdlight, power, rings, state, telemetry, tray::TrayMsg};
 
 const DEBOUNCE: Duration = Duration::from_millis(120);
 
@@ -90,6 +91,11 @@ pub struct App {
     ip: crate::inputplumber::Status,
     ip_profiles: Vec<(String, std::path::PathBuf)>,
     last_ip_poll: Instant,
+    /// Other daemons driving the same hardware. Rescanned on a timer rather
+    /// than per frame: it is a /proc walk, and daemons come and go on the scale
+    /// of a session, not a repaint.
+    conflicts: Vec<&'static conflicts::Daemon>,
+    last_conflict_scan: Instant,
     profile: Option<String>,
     helper_up: bool,
     /// 0 auto, 1 manual, 2 curve
@@ -146,6 +152,8 @@ impl App {
             ip: Default::default(),
             ip_profiles: crate::inputplumber::profiles(),
             last_ip_poll: Instant::now() - Duration::from_secs(60),
+            conflicts: conflicts::scan(),
+            last_conflict_scan: Instant::now(),
             profile: power::current(),
             helper_up: false,
             fan_mode: 0,
@@ -495,6 +503,7 @@ impl App {
                      are volatile and re-applied at login. This shows what was last set — \
                      reading them back needs the ryzen_smu module.",
                 );
+                self.conflict_warning(ui, conflicts::Over::Tdp, "overwrite what you set here");
             }
         }
     }
@@ -788,9 +797,31 @@ impl App {
                          stick-as-mouse with it.",
                     );
                 }
+                self.conflict_warning(
+                    ui,
+                    conflicts::Over::Input,
+                    "fight InputPlumber for the pad",
+                );
                 ui.add_space(8.0);
                 hint(ui, &format!("InputPlumber {}", self.ip.version));
             }
+        }
+    }
+
+    /// Name whatever else on the system drives this setting.
+    ///
+    /// Silence when nothing is running is the point: this only appears on a
+    /// machine where the control really can be overruled.
+    fn conflict_warning(&self, ui: &mut egui::Ui, over: conflicts::Over, what: &str) {
+        let found: Vec<&conflicts::Daemon> =
+            self.conflicts.iter().copied().filter(|d| d.fights(over)).collect();
+        if found.is_empty() {
+            return;
+        }
+        let names: Vec<&str> = found.iter().map(|d| d.name).collect();
+        warn(ui, &format!("{} running — this can {what}.", names.join(" and ")));
+        for d in found {
+            hint(ui, &format!("{}: {}", d.name, d.effect));
         }
     }
 
@@ -882,6 +913,10 @@ impl eframe::App for App {
         if self.tab == Tab::Input && self.last_ip_poll.elapsed() > Duration::from_secs(5) {
             self.last_ip_poll = Instant::now();
             self.submit(Job::PollIp);
+        }
+        if self.last_conflict_scan.elapsed() > Duration::from_secs(15) {
+            self.last_conflict_scan = Instant::now();
+            self.conflicts = conflicts::scan();
         }
         // Rediscover anything missing. Cheap when everything is present (the
         // probe is skipped entirely), and it is the only way a device that

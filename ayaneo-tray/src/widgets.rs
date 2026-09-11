@@ -122,6 +122,21 @@ pub fn hint(ui: &mut Ui, text: &str) {
     ui.add_space(2.0);
 }
 
+/// Something else on the system is fighting this control.
+///
+/// Louder than a hint and quieter than `unavailable`: the control still works,
+/// it just may not be the last word on the setting.
+pub fn warn(ui: &mut Ui, text: &str) {
+    ui.add_space(6.0);
+    ui.add(
+        egui::Label::new(
+            RichText::new(text).size(13.5).color(Color32::from_rgb(226, 150, 70)),
+        )
+        .wrap(),
+    );
+    ui.add_space(2.0);
+}
+
 /// A warning that a subsystem is not reachable.
 pub fn unavailable(ui: &mut Ui, what: &str, err: &Option<String>) {
     ui.add_space(6.0);
