@@ -632,6 +632,12 @@ impl App {
 
         ui.add_space(8.0);
         ui.label(egui::RichText::new("Switch profile").strong());
+        hint(
+            ui,
+            "The profile decides what each control does. \"Default\" has no \
+             stick-to-mouse mapping, so switching to it is how you turn the \
+             right-stick mouse off.",
+        );
         let profiles = self.ip_profiles.clone();
         let mut chosen: Option<std::path::PathBuf> = None;
         ui.horizontal_wrapped(|ui| {
@@ -678,8 +684,11 @@ impl App {
         }
         hint(
             ui,
-            "On, InputPlumber takes over every input device it recognises; off, only \
-             ones it has a config for.",
+            "Whether InputPlumber picks up devices it has no configuration for — \
+             external controllers, mostly. It does not change anything for this \
+             handheld: its own config sets auto_manage, and auto-managed devices are \
+             skipped when this is switched off, so the built-in controller stays \
+             managed either way.",
         );
 
         if self.helper_up {
