@@ -11,7 +11,9 @@
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
-use crate::widgets::{hint, row, section, segmented, swatch, toggle, unavailable, wide_button};
+use crate::widgets::{hint, row, segmented, slider, swatch, toggle, unavailable, wide_button};
+
+const SENS_LABELS: [&str; 3] = ["50", "100", "150"];
 use crate::worker::{Job, Msg, Worker};
 use crate::{gamepad, hw, kbdlight, power, rings, state, telemetry, tray::TrayMsg};
 
@@ -25,8 +27,36 @@ enum Tab {
     About,
 }
 
+impl Tab {
+    const ALL: [Tab; 4] = [Tab::Controller, Tab::Lighting, Tab::Power, Tab::About];
+
+    fn index(self) -> usize {
+        match self {
+            Tab::Controller => 0,
+            Tab::Lighting => 1,
+            Tab::Power => 2,
+            Tab::About => 3,
+        }
+    }
+    fn label(self) -> &'static str {
+        ["Controller", "Lighting", "Power", "About"][self.index()]
+    }
+    /// Splitting each section into its own page is what keeps any one screen
+    /// down to a few large controls, which is the whole point on a handheld.
+    fn subtabs(self) -> &'static [&'static str] {
+        match self {
+            Tab::Controller => &["Sticks", "Feel", "Triggers", "Gyro", "Turbo"],
+            Tab::Lighting => &["Keyboard", "Rings"],
+            Tab::Power => &["Profile", "TDP", "Fan", "Sensors"],
+            Tab::About => &["Info", "Display", "Devices"],
+        }
+    }
+}
+
 pub struct App {
     tab: Tab,
+    /// Remembered per primary tab, so switching back returns where you were.
+    sub: [usize; 4],
     settings: state::Settings,
     trusted: bool,
     devices: hw::Devices,
@@ -55,7 +85,25 @@ impl App {
     pub fn new(rx: Receiver<TrayMsg>, devices: hw::Devices) -> Self {
         let (settings, trusted) = state::load();
         Self {
-            tab: Tab::Controller,
+            // Debug hook, same spirit as the close selftest: open straight onto a
+            // page so it can be checked without someone clicking through.
+            tab: match std::env::var("AYANEO_TRAY_TAB").unwrap_or_default().as_str() {
+                s if s.starts_with("lighting") => Tab::Lighting,
+                s if s.starts_with("power") => Tab::Power,
+                s if s.starts_with("about") => Tab::About,
+                _ => Tab::Controller,
+            },
+            sub: {
+                let mut v = [0usize; 4];
+                if let Some((_, n)) = std::env::var("AYANEO_TRAY_TAB")
+                    .unwrap_or_default()
+                    .split_once(':')
+                {
+                    let n: usize = n.parse().unwrap_or(0);
+                    v = [n; 4];
+                }
+                v
+            },
             settings,
             trusted,
             devices,
@@ -107,7 +155,7 @@ impl App {
         .into();
         style.spacing.item_spacing = egui::vec2(10.0, 9.0);
         style.spacing.button_padding = egui::vec2(14.0, 10.0);
-        style.spacing.slider_width = 240.0;
+        style.spacing.slider_width = 180.0;
         style.spacing.interact_size.y = crate::widgets::TOUCH_H;
         style.visuals.widgets.inactive.rounding = 8.0.into();
         style.visuals.widgets.hovered.rounding = 8.0.into();
@@ -151,7 +199,7 @@ impl App {
 
     // ---------------------------------------------------------------- tabs
 
-    fn controller_tab(&mut self, ui: &mut egui::Ui) {
+    fn controller_tab(&mut self, ui: &mut egui::Ui, sub: usize) {
         if self.devices.gamepad.is_none() {
             unavailable(ui, "Gamepad", &self.devices.gamepad_err);
             return;
@@ -159,9 +207,8 @@ impl App {
         if !self.trusted {
             ui.label(
                 egui::RichText::new(
-                    "No saved settings yet. The values below are factory defaults, not \
-                     what the controller currently holds — changing anything writes the \
-                     whole record.",
+                    "No saved settings yet — these are factory defaults, not what the \
+                     controller holds. Changing anything writes the whole record.",
                 )
                 .color(egui::Color32::from_rgb(226, 150, 70)),
             );
@@ -169,49 +216,53 @@ impl App {
         let mut rec = self.settings.record();
         let mut changed = false;
 
-        section(ui, "Sticks");
-        row(ui, "Deadzone", |ui| {
-            if let Some(v) = toggle(ui, rec.deadzone()) {
-                rec.set_deadzone(v);
-                changed = true;
+        match sub {
+            0 => {
+                row(ui, "Deadzone", |ui| {
+                    if let Some(v) = toggle(ui, rec.deadzone()) {
+                        rec.set_deadzone(v);
+                        changed = true;
+                    }
+                });
+                hint(
+                    ui,
+                    "Off gives full resolution near centre. Leave on if a stick does not \
+                     return to the same place twice.",
+                );
+                let sens: Vec<(u8, &str)> =
+                    gamepad::SENS.iter().map(|(lvl, pct)| (*lvl, SENS_LABELS[(*pct / 50 - 1) as usize])).collect();
+                for (left, label) in [(true, "Left"), (false, "Right")] {
+                    row(ui, label, |ui| {
+                        if let Some(v) = segmented(ui, rec.sens(left), &sens) {
+                            rec.set_sens(left, v);
+                            changed = true;
+                        }
+                    });
+                }
+                hint(ui, "Stick sensitivity, as AYASpace presents it.");
             }
-        });
-        hint(
-            ui,
-            "Off gives full resolution near centre. Leave on if a stick does not return \
-             to the same place twice.",
-        );
-        let sens: Vec<(u8, &str)> = gamepad::SENS
-            .iter()
-            .map(|(lvl, pct)| (*lvl, if *pct == 50 { "50" } else if *pct == 100 { "100" } else { "150" }))
-            .collect();
-        for (left, label) in [(true, "Left sensitivity"), (false, "Right sensitivity")] {
-            row(ui, label, |ui| {
-                if let Some(v) = segmented(ui, rec.sens(left), &sens) {
-                    rec.set_sens(left, v);
+            1 => {
+                row(ui, "Rumble", |ui| {
+                    if let Some(v) = segmented(ui, rec.rumble(), &gamepad::LEVELS) {
+                        rec.set_rumble(v);
+                        changed = true;
+                    }
+                });
+                row(ui, "Swap ABXY", |ui| {
+                    if let Some(v) = toggle(ui, rec.swap_abxy()) {
+                        rec.set_swap_abxy(v);
+                        changed = true;
+                    }
+                });
+                ui.add_space(16.0);
+                if wide_button(ui, "Restore factory defaults").clicked() {
+                    rec = gamepad::Record::default();
                     changed = true;
                 }
-            });
-        }
-
-        section(ui, "Feel");
-        row(ui, "Rumble", |ui| {
-            if let Some(v) = segmented(ui, rec.rumble(), &gamepad::LEVELS) {
-                rec.set_rumble(v);
-                changed = true;
+                hint(ui, "Sends AYANEO's own default record to the controller.");
             }
-        });
-        row(ui, "Swap ABXY", |ui| {
-            if let Some(v) = toggle(ui, rec.swap_abxy()) {
-                rec.set_swap_abxy(v);
-                changed = true;
-            }
-        });
-
-        egui::CollapsingHeader::new(egui::RichText::new("Triggers and gyro").size(17.0))
-            .default_open(false)
-            .show(ui, |ui| {
-                for (l2, label) in [(true, "Trigger L2"), (false, "Trigger R2")] {
+            2 => {
+                for (l2, label) in [(true, "L2"), (false, "R2")] {
                     row(ui, label, |ui| {
                         if let Some(v) = segmented(ui, rec.trigger(l2), &gamepad::LEVELS) {
                             rec.set_trigger(l2, v);
@@ -219,7 +270,10 @@ impl App {
                         }
                     });
                 }
-                for (l1, label) in [(true, "Gyro L1"), (false, "Gyro L2")] {
+                hint(ui, "Trigger sensitivity.");
+            }
+            3 => {
+                for (l1, label) in [(true, "L1"), (false, "L2")] {
                     row(ui, label, |ui| {
                         if let Some(v) = segmented(ui, rec.gyro(l1), &gamepad::LEVELS) {
                             rec.set_gyro(l1, v);
@@ -227,11 +281,9 @@ impl App {
                         }
                     });
                 }
-            });
-
-        egui::CollapsingHeader::new(egui::RichText::new("Turbo").size(17.0))
-            .default_open(false)
-            .show(ui, |ui| {
+                hint(ui, "Gyro levels. The SLIDE reports these but exposes no gyro UI in AYASpace.");
+            }
+            _ => {
                 for (i, name) in ["A", "B", "X", "Y", "R1", "R2"].iter().enumerate() {
                     row(ui, name, |ui| {
                         if let Some(v) = segmented(ui, rec.turbo(i), &gamepad::TURBO) {
@@ -240,12 +292,8 @@ impl App {
                         }
                     });
                 }
-            });
-
-        ui.add_space(14.0);
-        if wide_button(ui, "Restore factory defaults").clicked() {
-            rec = gamepad::Record::default();
-            changed = true;
+                hint(ui, "Burst repeats while held; auto repeats continuously.");
+            }
         }
 
         if changed {
@@ -277,11 +325,12 @@ impl App {
         changed
     }
 
-    fn lighting_tab(&mut self, ui: &mut egui::Ui) {
-        section(ui, "Keyboard");
-        if self.devices.kbd.is_none() {
-            unavailable(ui, "Keyboard backlight", &self.devices.kbd_err);
-        } else {
+    fn lighting_tab(&mut self, ui: &mut egui::Ui, sub: usize) {
+        if sub == 0 {
+            if self.devices.kbd.is_none() {
+                unavailable(ui, "Keyboard backlight", &self.devices.kbd_err);
+                return;
+            }
             let mut k = self.settings.kbdlight;
             let mut ch = false;
             row(ui, "Backlight", |ui| {
@@ -302,10 +351,7 @@ impl App {
                 }
             });
             row(ui, "Brightness", |ui| {
-                if ui
-                    .add(egui::Slider::new(&mut k.brightness, 0..=100).suffix(" %"))
-                    .changed()
-                {
+                if slider(ui, &mut k.brightness, 0..=100, " %").changed() {
                     ch = true;
                 }
             });
@@ -324,12 +370,11 @@ impl App {
                 self.settings.kbdlight = k;
                 self.dirty_kbd = Some(Instant::now());
             }
-        }
-
-        section(ui, "Joystick rings");
-        if self.devices.rings.is_none() {
-            unavailable(ui, "Ring LEDs", &self.devices.rings_err);
         } else {
+            if self.devices.rings.is_none() {
+                unavailable(ui, "Ring LEDs", &self.devices.rings_err);
+                return;
+            }
             let mut r = self.settings.rings;
             let mut ch = false;
             row(ui, "Colour", |ui| {
@@ -338,7 +383,7 @@ impl App {
                 }
             });
             row(ui, "Brightness", |ui| {
-                if ui.add(egui::Slider::new(&mut r.brightness, 0..=255)).changed() {
+                if slider(ui, &mut r.brightness, 0..=255, "").changed() {
                     ch = true;
                 }
             });
@@ -350,169 +395,193 @@ impl App {
         }
     }
 
-    fn power_tab(&mut self, ui: &mut egui::Ui) {
-        section(ui, "Profile");
-        if self.profiles.is_empty() {
-            hint(ui, "No ACPI platform_profile on this machine.");
-        } else {
-            let direct = power::writable_directly();
-            let can = direct || self.helper_up;
-            let self_profiles = self.profiles.clone();
-            let opts: Vec<(usize, &str)> =
-                self_profiles.iter().enumerate().map(|(i, p)| (i, p.as_str())).collect();
-            let cur = self
-                .profiles
-                .iter()
-                .position(|p| Some(p.as_str()) == self.profile.as_deref())
-                .unwrap_or(usize::MAX);
-            let mut picked: Option<String> = None;
-            row(ui, "Platform", |ui| {
-                ui.add_enabled_ui(can, |ui| {
-                    if let Some(i) = segmented(ui, cur, &opts) {
-                        picked = Some(self_profiles[i].clone());
-                    }
-                });
-            });
-            if let Some(p) = picked {
-                if direct {
-                    if let Err(e) = std::fs::write(power::PATH, &p) {
-                        self.status = format!("Profile: {e}");
-                    }
-                } else {
-                    self.submit(Job::Helper(format!("profile {p}")));
-                }
-                self.profile = Some(p.clone());
-                self.settings.power_profile = Some(p.clone());
-                let _ = state::save(&self.settings);
-                self.status = format!("Profile: {p}");
-            }
-        }
-
-        section(ui, "Sustained power");
-        if !self.helper_up {
-            unavailable(ui, "TDP control", &Some("helper not running".into()));
-            hint(ui, "sudo systemctl enable --now ayaneo-tray-helper  (and install ryzenadj)");
-            if wide_button(ui, "Re-check helper").clicked() {
+    fn power_tab(&mut self, ui: &mut egui::Ui, sub: usize) {
+        // Profile can sometimes be written directly; everything else needs the
+        // helper, so say so once rather than on every page.
+        if sub != 3 && sub != 0 && !self.helper_up {
+            unavailable(ui, "Helper not running", &None);
+            hint(ui, "sudo systemctl enable --now ayaneo-tray-helper");
+            if wide_button(ui, "Re-check").clicked() {
                 self.submit(Job::PollHelper);
             }
             return;
         }
-        let tdp: Vec<(u32, &str)> =
-            power::TDP_PRESETS.iter().map(|(w, _)| (*w, "")).collect::<Vec<_>>();
-        let labels: Vec<String> = power::TDP_PRESETS.iter().map(|(w, _)| format!("{w} W")).collect();
-        let opts: Vec<(u32, &str)> = tdp
-            .iter()
-            .enumerate()
-            .map(|(i, (w, _))| (*w, labels[i].as_str()))
-            .collect();
-        let cur_tdp = self.settings.tdp_watts.unwrap_or(0);
-        let picked_tdp = row(ui, "TDP", |ui| segmented(ui, cur_tdp, &opts));
-        if let Some(w) = picked_tdp {
-            self.submit(Job::Helper(format!("tdp {w} {w} {w}")));
-            self.settings.tdp_watts = Some(w);
-            let _ = state::save(&self.settings);
-            self.status = format!("TDP {w} W…");
-        }
-        hint(
-            ui,
-            "Sets STAPM and the fast/slow limits together. SMU limits are volatile and \
-             re-applied at login. The selection shows what was last set — reading limits \
-             back needs the ryzen_smu module.",
-        );
 
-        section(ui, "Fan");
-        let cur_fan = self.fan_manual;
-        let picked_fan =
-            row(ui, "Control", |ui| segmented(ui, cur_fan, &[(false, "Auto"), (true, "Manual")]));
-        if let Some(manual) = picked_fan {
-            let req = if manual {
-                format!("fan manual {}", self.fan_pct)
-            } else {
-                "fan auto".to_string()
-            };
-            self.submit(Job::Helper(req));
-            self.fan_manual = manual;
-            self.status = if manual {
-                format!("Fan: manual {}%…", self.fan_pct)
-            } else {
-                "Fan: automatic…".into()
-            };
-        }
-        let manual_now = self.fan_manual;
-        let mut pct = self.fan_pct;
-        let commit = row(ui, "Duty", |ui| {
-            let s = ui.add_enabled(manual_now, egui::Slider::new(&mut pct, 20..=100).suffix(" %"));
-            s.drag_stopped() || s.lost_focus()
-        });
-        self.fan_pct = pct;
-        if commit && manual_now {
-            self.submit(Job::Helper(format!("fan manual {}", self.fan_pct)));
-            self.status = format!("Fan: manual {}%…", self.fan_pct);
-        }
-        hint(
-            ui,
-            "Above 85 °C the helper forces automatic control and latches until you press \
-             Auto; the fan is handed back whenever the helper stops. Commanded duty — this \
-             machine has no tachometer.",
-        );
-        if !self.fan_note.is_empty() {
-            hint(ui, &self.fan_note);
-        }
-
-        section(ui, "Sensors");
-        ui.horizontal_wrapped(|ui| {
-            for (n, v) in &self.telemetry.temps {
-                ui.label(egui::RichText::new(format!("{n}  {v:.0} °C")).size(17.0));
-                ui.add_space(14.0);
+        match sub {
+            0 => {
+                if self.profiles.is_empty() {
+                    hint(ui, "No ACPI platform_profile on this machine.");
+                    return;
+                }
+                let direct = power::writable_directly();
+                let can = direct || self.helper_up;
+                let self_profiles = self.profiles.clone();
+                let opts: Vec<(usize, &str)> =
+                    self_profiles.iter().enumerate().map(|(i, p)| (i, p.as_str())).collect();
+                let cur = self_profiles
+                    .iter()
+                    .position(|p| Some(p.as_str()) == self.profile.as_deref())
+                    .unwrap_or(usize::MAX);
+                let mut picked: Option<String> = None;
+                row(ui, "Platform", |ui| {
+                    ui.add_enabled_ui(can, |ui| {
+                        if let Some(i) = segmented(ui, cur, &opts) {
+                            picked = Some(self_profiles[i].clone());
+                        }
+                    });
+                });
+                if let Some(p) = picked {
+                    if direct {
+                        if let Err(e) = std::fs::write(power::PATH, &p) {
+                            self.status = format!("Profile: {e}");
+                        }
+                    } else {
+                        self.submit(Job::Helper(format!("profile {p}")));
+                    }
+                    self.profile = Some(p.clone());
+                    self.settings.power_profile = Some(p.clone());
+                    let _ = state::save(&self.settings);
+                    self.status = format!("Profile: {p}");
+                }
+                hint(ui, "The ACPI platform profile. Coarse, but the kernel's own interface.");
             }
-        });
-        if let Some(p) = self.telemetry.battery_pct {
-            let st = self.telemetry.battery_status.clone().unwrap_or_default();
-            let w = self.telemetry.power_now_w.map(|w| format!("   {w:.1} W")).unwrap_or_default();
-            ui.label(egui::RichText::new(format!("Battery  {p} %   {st}{w}")).size(17.0));
+            1 => {
+                let labels: Vec<String> =
+                    power::TDP_PRESETS.iter().map(|(w, _)| format!("{w} W")).collect();
+                let opts: Vec<(u32, &str)> = power::TDP_PRESETS
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (w, _))| (*w, labels[i].as_str()))
+                    .collect();
+                let cur_tdp = self.settings.tdp_watts.unwrap_or(0);
+                let picked = row(ui, "Sustained", |ui| segmented(ui, cur_tdp, &opts));
+                if let Some(w) = picked {
+                    self.submit(Job::Helper(format!("tdp {w} {w} {w}")));
+                    self.settings.tdp_watts = Some(w);
+                    let _ = state::save(&self.settings);
+                    self.status = format!("TDP {w} W…");
+                }
+                hint(
+                    ui,
+                    "Sets STAPM and the fast/slow limits together via ryzenadj. SMU limits \
+                     are volatile and re-applied at login. This shows what was last set — \
+                     reading them back needs the ryzen_smu module.",
+                );
+            }
+            2 => {
+                let cur_fan = self.fan_manual;
+                let picked = row(ui, "Control", |ui| {
+                    segmented(ui, cur_fan, &[(false, "Auto"), (true, "Manual")])
+                });
+                if let Some(manual) = picked {
+                    let req = if manual {
+                        format!("fan manual {}", self.fan_pct)
+                    } else {
+                        "fan auto".to_string()
+                    };
+                    self.submit(Job::Helper(req));
+                    self.fan_manual = manual;
+                    self.status = if manual {
+                        format!("Fan: manual {}%…", self.fan_pct)
+                    } else {
+                        "Fan: automatic…".into()
+                    };
+                }
+                let manual_now = self.fan_manual;
+                let mut pct = self.fan_pct;
+                let commit = row(ui, "Duty", |ui| {
+                    let s = ui.add_enabled_ui(manual_now, |ui| slider(ui, &mut pct, 20..=100, " %")).inner;
+                    s.drag_stopped() || s.lost_focus()
+                });
+                self.fan_pct = pct;
+                if commit && manual_now {
+                    self.submit(Job::Helper(format!("fan manual {}", self.fan_pct)));
+                    self.status = format!("Fan: manual {}%…", self.fan_pct);
+                }
+                if !self.fan_note.is_empty() {
+                    ui.label(
+                        egui::RichText::new(&self.fan_note)
+                            .color(egui::Color32::from_rgb(226, 150, 70)),
+                    );
+                }
+                hint(
+                    ui,
+                    "Above 85 °C the helper forces automatic control and latches until you \
+                     press Auto; the fan is handed back whenever the helper stops. This is \
+                     commanded duty — the machine has no tachometer.",
+                );
+            }
+            _ => {
+                for (n, v) in &self.telemetry.temps {
+                    row(ui, n, |ui| {
+                        ui.label(egui::RichText::new(format!("{v:.0} °C")).size(19.0));
+                    });
+                }
+                if let Some(p) = self.telemetry.battery_pct {
+                    let st = self.telemetry.battery_status.clone().unwrap_or_default();
+                    row(ui, "Battery", |ui| {
+                        ui.label(egui::RichText::new(format!("{p} %  {st}")).size(19.0));
+                    });
+                }
+                if let Some(w) = self.telemetry.power_now_w {
+                    row(ui, "Draw", |ui| {
+                        ui.label(egui::RichText::new(format!("{w:.1} W")).size(19.0));
+                    });
+                }
+                hint(ui, "Read-only, straight from hwmon and power_supply.");
+            }
         }
     }
 
-    fn about_tab(&mut self, ui: &mut egui::Ui) {
-        section(ui, "ayaneo-tray");
-        ui.label(format!("version {}", env!("CARGO_PKG_VERSION")));
-        hint(ui, "The parts of AYASpace that matter, without a driver or a daemon.");
-
-        section(ui, "Display");
-        row(ui, "UI scale", |ui| {
-            let s = ui.add(egui::Slider::new(&mut self.settings.ui_scale, 1.0..=2.0).step_by(0.05));
-            if s.changed() {
-                ui.ctx().set_zoom_factor(self.settings.ui_scale);
+    fn about_tab(&mut self, ui: &mut egui::Ui, sub: usize) {
+        match sub {
+            0 => {
+                ui.label(egui::RichText::new("ayaneo-tray").size(22.0).strong());
+                hint(ui, &format!("version {}", env!("CARGO_PKG_VERSION")));
+                ui.add_space(10.0);
+                ui.label("The parts of AYASpace that matter, without a driver or a daemon.");
+                ui.add_space(12.0);
+                ui.label(egui::RichText::new("Transports").strong());
+                hint(ui, "Gamepad — GuLiKit MCU over an on-board UART at I/O 0x3E8, 115200 8N1");
+                hint(ui, "Keyboard backlight — HID feature report 0x41");
+                hint(ui, "Ring LEDs — sysfs multicolor LED via ayaneo-platform");
+                hint(ui, "Fan — EC registers 0xD1C8 (mode) and 0x1804 (duty)");
+                hint(ui, "Power — ACPI platform_profile, and ryzenadj through the helper");
             }
-            if s.drag_stopped() || s.lost_focus() {
-                let _ = state::save(&self.settings);
+            1 => {
+                row(ui, "UI scale", |ui| {
+                    let s = slider(ui, &mut self.settings.ui_scale, 1.0..=2.0, "×");
+                    if s.changed() {
+                        ui.ctx().set_zoom_factor(self.settings.ui_scale);
+                    }
+                    if s.drag_stopped() || s.lost_focus() {
+                        let _ = state::save(&self.settings);
+                    }
+                });
+                hint(ui, "Raise this if targets are too small for a thumb.");
             }
-        });
-        hint(ui, "Raise this if targets are too small for a thumb.");
-
-        section(ui, "Devices");
-        for (n, p) in [
-            ("Gamepad", &self.devices.gamepad),
-            ("Keyboard", &self.devices.kbd),
-            ("Rings", &self.devices.rings),
-        ] {
-            row(ui, n, |ui| {
-                ui.label(
-                    p.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "—".into()),
-                );
-            });
+            _ => {
+                for (n, p) in [
+                    ("Gamepad", &self.devices.gamepad),
+                    ("Keyboard", &self.devices.kbd),
+                    ("Rings", &self.devices.rings),
+                ] {
+                    row(ui, n, |ui| {
+                        ui.label(
+                            p.as_ref()
+                                .map(|p| p.display().to_string())
+                                .unwrap_or_else(|| "not found".into()),
+                        );
+                    });
+                }
+                row(ui, "Helper", |ui| {
+                    ui.label(if self.helper_up { "running" } else { "not running" });
+                });
+                ui.add_space(8.0);
+                hint(ui, &format!("settings: {}", state::path().display()));
+                hint(ui, "Discovery re-runs every 10 s while anything is missing.");
+            }
         }
-        row(ui, "Helper", |ui| {
-            ui.label(if self.helper_up { "running" } else { "not running" });
-        });
-
-        section(ui, "Transports");
-        hint(ui, "Gamepad — GuLiKit MCU over an on-board UART at I/O 0x3E8, 115200 8N1");
-        hint(ui, "Keyboard backlight — HID feature report 0x41");
-        hint(ui, "Ring LEDs — sysfs multicolor LED via ayaneo-platform");
-        hint(ui, "Fan — EC registers 0xD1C8 (mode) and 0x1804 (duty)");
-        ui.add_space(8.0);
-        hint(ui, &format!("settings: {}", state::path().display()));
     }
 }
 
@@ -584,41 +653,62 @@ impl eframe::App for App {
         }
         self.flush();
 
-        egui::TopBottomPanel::top("tabs").show(ctx, |ui| {
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
-                let w = (ui.available_width() - 24.0) / 4.0;
-                for (t, name) in [
-                    (Tab::Controller, "Controller"),
-                    (Tab::Lighting, "Lighting"),
-                    (Tab::Power, "Power"),
-                    (Tab::About, "About"),
-                ] {
-                    let sel = self.tab == t;
-                    let mut b = egui::Button::new(egui::RichText::new(name).size(16.0))
-                        .min_size(egui::vec2(w, crate::widgets::TOUCH_H + 4.0));
-                    if sel {
+        egui::SidePanel::left("nav")
+            .resizable(false)
+            .exact_width(148.0)
+            .show(ctx, |ui| {
+                ui.add_space(8.0);
+                for t in Tab::ALL {
+                    let selected = self.tab == t;
+                    let mut b = egui::Button::new(egui::RichText::new(t.label()).size(16.0))
+                        .min_size(egui::vec2(ui.available_width(), crate::widgets::TOUCH_H + 6.0));
+                    if selected {
                         b = b.fill(ui.visuals().selection.bg_fill);
                     }
                     if ui.add(b).clicked() {
                         self.tab = t;
                     }
+                    ui.add_space(6.0);
                 }
             });
-            ui.add_space(6.0);
-        });
+
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             ui.add_space(3.0);
             ui.label(egui::RichText::new(&self.status).size(13.0));
             ui.add_space(3.0);
         });
+
         egui::CentralPanel::default().show(ctx, |ui| {
-            egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| match self.tab {
-                Tab::Controller => self.controller_tab(ui),
-                Tab::Lighting => self.lighting_tab(ui),
-                Tab::Power => self.power_tab(ui),
-                Tab::About => self.about_tab(ui),
+            let tab = self.tab;
+            let subs = tab.subtabs();
+            let idx = tab.index();
+            if self.sub[idx] >= subs.len() {
+                self.sub[idx] = 0;
+            }
+            ui.add_space(6.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                for (i, name) in subs.iter().enumerate() {
+                    let selected = self.sub[idx] == i;
+                    let mut b = egui::Button::new(egui::RichText::new(*name).size(15.0))
+                        .min_size(egui::vec2(0.0, crate::widgets::TOUCH_H - 4.0));
+                    if selected {
+                        b = b.fill(ui.visuals().selection.bg_fill);
+                    }
+                    if ui.add(b).clicked() {
+                        self.sub[idx] = i;
+                    }
+                }
+            });
+            ui.add_space(4.0);
+            ui.separator();
+            ui.add_space(6.0);
+            let sub = self.sub[idx];
+            egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| match tab {
+                Tab::Controller => self.controller_tab(ui, sub),
+                Tab::Lighting => self.lighting_tab(ui, sub),
+                Tab::Power => self.power_tab(ui, sub),
+                Tab::About => self.about_tab(ui, sub),
             });
         });
 

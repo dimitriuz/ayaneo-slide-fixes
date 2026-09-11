@@ -53,6 +53,12 @@ in `~/.config/ayaneo-tray/settings.json`, exactly as AYASpace caches
 `proto.gulikit` and `KeyBoardLightConfig`. On first run the CLI tools' caches
 in `/var/lib/ayaneo/` are imported so the two agree.
 
+The GUI keeps its cache in `~/.config/ayaneo-tray/settings.json`, seeded once
+from the CLI tools' `/var/lib/ayaneo/` on first run. After that the two are
+independent — the GUI runs unprivileged and cannot write a root-owned
+directory — so if you use both, expect them to drift. The hardware is the thing
+both are describing, and neither can read it back.
+
 Because of that, **discovery never writes.** The only way to probe the gamepad
 protocol is to send a frame, and a frame is an absolute settings record — so
 probing with a record that does not match the hardware silently changes

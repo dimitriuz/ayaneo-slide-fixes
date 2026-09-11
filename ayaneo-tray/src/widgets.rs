@@ -10,22 +10,41 @@ use egui::{vec2, Align, Button, Color32, Layout, Response, RichText, Ui, Vec2};
 /// Minimum height of anything you are expected to hit with a finger.
 pub const TOUCH_H: f32 = 46.0;
 /// Width reserved for a row's label, so rows line up down the page.
-pub const LABEL_W: f32 = 150.0;
+pub const LABEL_W: f32 = 104.0;
 
 /// A labelled row: name on the left, controls on the right.
+///
+/// The control area is explicitly bounded to what is left over. Without that,
+/// a too-wide child (a fixed-width slider, a third segmented option) silently
+/// widens the whole panel, and everything below it is then clipped at the
+/// window edge rather than wrapping.
 pub fn row<R>(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
     let mut out = None;
+    let avail = ui.available_width();
     ui.horizontal(|ui| {
         ui.set_min_height(TOUCH_H);
         ui.add_sized(
             vec2(LABEL_W, TOUCH_H),
             egui::Label::new(RichText::new(label).strong()).halign(Align::LEFT),
         );
-        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+        let w = (avail - LABEL_W - 12.0).max(140.0);
+        ui.allocate_ui_with_layout(vec2(w, TOUCH_H), Layout::left_to_right(Align::Center), |ui| {
             out = Some(add(ui));
         });
     });
     out.unwrap()
+}
+
+/// A slider that fills the row rather than assuming a fixed width.
+pub fn slider<T: egui::emath::Numeric>(
+    ui: &mut Ui,
+    value: &mut T,
+    range: std::ops::RangeInclusive<T>,
+    suffix: &str,
+) -> Response {
+    // leave room for the value readout egui draws beside the track
+    ui.spacing_mut().slider_width = (ui.available_width() - 76.0).max(90.0);
+    ui.add(egui::Slider::new(value, range).suffix(suffix))
 }
 
 /// A segmented control. Returns the newly chosen value, if any.
@@ -39,11 +58,13 @@ pub fn segmented<T: PartialEq + Copy>(
     options: &[(T, &str)],
 ) -> Option<T> {
     let mut chosen = None;
-    ui.horizontal(|ui| {
+    // wrapped, so a long set of options folds onto a second line instead of
+    // running off the edge
+    ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
         for (value, text) in options {
             let selected = *value == current;
-            let w = (text.len() as f32 * 9.0 + 34.0).max(64.0);
+            let w = (text.len() as f32 * 8.0 + 26.0).max(58.0);
             let mut b = Button::new(RichText::new(*text).size(16.0)).min_size(vec2(w, TOUCH_H));
             if selected {
                 b = b.fill(ui.visuals().selection.bg_fill);
@@ -93,7 +114,7 @@ pub fn section(ui: &mut Ui, title: &str) {
 
 /// Small explanatory text under a control.
 pub fn hint(ui: &mut Ui, text: &str) {
-    ui.label(RichText::new(text).size(12.5).weak());
+    ui.add(egui::Label::new(RichText::new(text).size(12.5).weak()).wrap());
     ui.add_space(2.0);
 }
 
