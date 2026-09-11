@@ -48,7 +48,7 @@ just after write   ec d1d1=0x65 CLOSE   sysfs=auto [inhibit-charge]
 
 So **sysfs says what was asked for and the EC register says what is in force**, and
 they disagree for up to half a minute. Anything reporting "it didn't work" inside
-that window is reporting the lag. `ayaneo-tray --status` shows both:
+that window is reporting the lag. `ayahelper --status` shows both:
 
 ```
 charging        behaviour auto  limit 80%  EC charging
@@ -59,7 +59,7 @@ charging        behaviour auto  limit 80%  EC charging
 ## The charge limit
 
 With no threshold register, a limit has to be supervised: hold `inhibit-charge`
-above the target, release it below. `ayaneo-tray`'s helper does this in a thread
+above the target, release it below. `ayahelper`'s helper does this in a thread
 that polls every 20 seconds, with **3 points of hysteresis** — without it the
 supervisor would toggle on every reported percent, and each toggle costs up to 30
 seconds of the driver's writer cycle.
@@ -70,7 +70,7 @@ somebody logs in is not a charge limit. The value is kept in
 at start:
 
 ```
-$ journalctl -u ayaneo-tray-helper -n1
+$ journalctl -u ayahelper-privileged -n1
 charge: limit 80% restored
 ```
 

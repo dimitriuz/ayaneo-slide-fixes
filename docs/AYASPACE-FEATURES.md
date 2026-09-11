@@ -111,10 +111,10 @@ and then dropped. Nothing logs this.
 Input → Buttons rebinds them, or from a script:
 
 ```
-$ ayaneo-tray --map
+$ ayahelper --map
   buttons: LeftTop (LC), RightTop (RC), QuickAccess (Custom)
   actions: none, esc, app, osk, guide, paddle
-$ ayaneo-tray --map RightTop esc
+$ ayahelper --map RightTop esc
 ```
 
 Three traps worth knowing. Bindings are edits to the *running* profile, so

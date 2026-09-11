@@ -16,6 +16,18 @@ floor** specific to this machine.
 
 ---
 
+## The tool lives elsewhere now
+
+The tray application that came out of this research — controller, lighting, fan,
+power, charging and button bindings — is its own project:
+
+**[ayaHelper](https://github.com/dimitriuz/ayahelper)**
+
+This repository keeps the research it is built on: the protocol work, the EC and
+AYASpace reverse engineering, and the kernel backlight fixes below.
+
+---
+
 ## TL;DR
 
 ```bash

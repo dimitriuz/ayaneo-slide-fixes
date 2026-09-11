@@ -413,5 +413,5 @@ busctl --system call org.shadowblip.InputPlumber \
 ```
 
 That edits the running profile, not the file, so loading a profile again resets
-it. `ayaneo-tray`'s Input tab exposes this as a slider and re-applies the value
+it. `ayahelper`'s Input tab exposes this as a slider and re-applies the value
 after a profile switch.
