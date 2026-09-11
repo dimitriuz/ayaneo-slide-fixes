@@ -64,7 +64,7 @@ impl Tab {
         match self {
             Tab::Controller => &["Sticks", "Feel", "Triggers", "Gyro", "Turbo"],
             Tab::Lighting => &["Keyboard", "Rings"],
-            Tab::Power => &["Profile", "TDP"],
+            Tab::Power => &["Profile", "TDP", "Charge"],
             // A single page needs no second row of navigation.
             Tab::Input => &["Profile", "Pointer", "Target", "Service"],
             Tab::Fan | Tab::Sensors => &[],
@@ -100,6 +100,8 @@ pub struct App {
     /// `None` until the first poll comes back.
     tdp_read: Option<Result<(u32, u32, u32), String>>,
     last_tdp_poll: Instant,
+    chg: crate::charge::Status,
+    last_chg_poll: Instant,
     profile: Option<String>,
     helper_up: bool,
     /// 0 auto, 1 manual, 2 curve
@@ -160,6 +162,8 @@ impl App {
             last_conflict_scan: Instant::now(),
             tdp_read: None,
             last_tdp_poll: Instant::now() - Duration::from_secs(60),
+            chg: crate::charge::Status::default(),
+            last_chg_poll: Instant::now() - Duration::from_secs(60),
             profile: power::current(),
             helper_up: false,
             fan_mode: 0,
@@ -441,7 +445,7 @@ impl App {
     }
 
     fn power_tab(&mut self, ui: &mut egui::Ui, sub: usize) {
-        if sub == 1 && !self.helper_up {
+        if sub > 0 && !self.helper_up {
             unavailable(ui, "Helper not running", &None);
             hint(ui, "sudo systemctl enable --now ayaneo-tray-helper");
             if wide_button(ui, "Re-check").clicked() {
@@ -487,6 +491,7 @@ impl App {
                 }
                 hint(ui, "The ACPI platform profile. Coarse, but the kernel's own interface.");
             }
+            2 => self.charge_page(ui),
             _ => {
                 let labels: Vec<String> =
                     power::TDP_PRESETS.iter().map(|(w, _)| format!("{w} W")).collect();
@@ -860,6 +865,92 @@ impl App {
         }
     }
 
+    fn charge_page(&mut self, ui: &mut egui::Ui) {
+        if !self.chg.available() {
+            unavailable(
+                ui,
+                "Charge control",
+                &Some("this battery exposes no charge_behaviour".into()),
+            );
+            hint(
+                ui,
+                "It comes from the ayaneo-platform module, which offers it only on \
+                 models and EC versions it knows can do it.",
+            );
+            return;
+        }
+
+        if let Some(c) = self.chg.capacity {
+            row(ui, "Battery", |ui| {
+                ui.label(
+                    egui::RichText::new(format!("{c} %  {}", self.chg.status)).size(19.0),
+                );
+            });
+        }
+
+        let limit = self.chg.limit;
+        let mut opts: Vec<(u32, &str)> = vec![(0, "Off")];
+        let labels: Vec<String> =
+            crate::charge::LIMIT_PRESETS.iter().map(|p| format!("{p} %")).collect();
+        for (i, p) in crate::charge::LIMIT_PRESETS.iter().enumerate() {
+            opts.push((*p, labels[i].as_str()));
+        }
+        if let Some(p) = row(ui, "Limit", |ui| segmented(ui, limit, &opts)) {
+            self.submit(Job::ChargeLimit(p));
+            self.status = if p == 0 {
+                "Charge limit off".into()
+            } else {
+                format!("Charge limit {p}%…")
+            };
+            self.last_chg_poll = Instant::now();
+        }
+        hint(
+            ui,
+            "Stops charging above the limit and starts again three points below \
+             it. There is no threshold register in this hardware, so it is held \
+             there by the background helper — it keeps working with this window \
+             closed, and across a reboot.",
+        );
+
+        ui.add_space(6.0);
+        let inhibit = self.chg.inhibiting();
+        // With a limit set, the supervisor owns this and would undo a click
+        // within twenty seconds. Better to show why than to let it be fought.
+        ui.add_enabled_ui(limit == 0, |ui| {
+            if let Some(v) = row(ui, "Charging", |ui| {
+                segmented(ui, inhibit, &[(false, "Normal"), (true, "Bypass")])
+            }) {
+                let b = if v { "inhibit-charge" } else { "auto" };
+                self.submit(Job::ChargeBehaviour(b.to_string()));
+                self.status =
+                    if v { "Bypassing the battery…".into() } else { "Charging normally…".into() };
+                self.last_chg_poll = Instant::now();
+            }
+        });
+        if limit == 0 {
+            hint(
+                ui,
+                "Bypass runs the machine off the adapter and leaves the cell alone. \
+                 Useful while it is plugged in for hours; it does nothing on battery.",
+            );
+        } else {
+            hint(ui, "Set the limit to Off to drive this by hand.");
+        }
+
+        // sysfs accepts the write immediately, but the kernel module only pushes
+        // it to the EC every 30 seconds, so the two disagree for up to half a
+        // minute. Showing the register is the difference between "it did not
+        // work" and "wait".
+        match self.chg.ec_bypass {
+            Some(ec) if ec != inhibit => {
+                hint(ui, "Asked for — the EC applies it within 30 seconds.");
+            }
+            Some(true) => hint(ui, "In force: the EC is bypassing the battery."),
+            Some(false) => hint(ui, "In force: the EC is charging normally."),
+            None => {}
+        }
+    }
+
     /// Name whatever else on the system drives this setting.
     ///
     /// Silence when nothing is running is the point: this only appears on a
@@ -966,6 +1057,14 @@ impl eframe::App for App {
             self.last_ip_poll = Instant::now();
             self.submit(Job::PollIp);
         }
+        if self.tab == Tab::Power
+            && self.sub[Tab::Power.index()] == 2
+            && self.helper_up
+            && self.last_chg_poll.elapsed() > Duration::from_secs(5)
+        {
+            self.last_chg_poll = Instant::now();
+            self.submit(Job::PollCharge);
+        }
         // Only while the page that shows it is open: it shells out to ryzenadj.
         if self.tab == Tab::Power
             && self.sub[Tab::Power.index()] == 1
@@ -1003,6 +1102,7 @@ impl eframe::App for App {
                 }
                 Msg::IpState(st) => self.ip = st,
                 Msg::TdpLimits(r) => self.tdp_read = Some(r),
+                Msg::ChargeState(c) => self.chg = c,
                 Msg::HelperState(up, s) => {
                     self.helper_up = up;
                     if up {

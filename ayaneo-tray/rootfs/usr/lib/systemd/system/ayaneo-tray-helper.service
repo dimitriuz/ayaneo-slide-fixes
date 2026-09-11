@@ -1,5 +1,5 @@
 [Unit]
-Description=AYANEO tray privileged helper (fan, SMU power limits, platform profile)
+Description=AYANEO tray privileged helper (fan, SMU power limits, charge limit, platform profile)
 Documentation=https://github.com/dimitriuz/ayaneo-slide-fixes
 
 [Service]
@@ -8,6 +8,9 @@ ExecStart=/usr/bin/ayaneo-tray --helper
 Group=wheel
 RuntimeDirectory=ayaneo-tray
 RuntimeDirectoryMode=0750
+# The charge limit is kept here so it survives a reboot and applies before
+# anyone logs in. ProtectSystem=strict would otherwise make /var/lib read-only.
+StateDirectory=ayaneo
 # The helper only spawns ryzenadj and writes one sysfs file; keep the rest away.
 ProtectHome=yes
 ProtectSystem=strict

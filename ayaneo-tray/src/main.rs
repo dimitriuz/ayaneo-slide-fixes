@@ -5,6 +5,7 @@
 //! report, and the ring LEDs over sysfs. See the docs/ directory of
 //! ayaneo-slide-fixes for how each protocol was established.
 
+mod charge;
 mod conflicts;
 mod ec;
 mod fan;
@@ -127,6 +128,26 @@ fn print_status() {
         print!(" {w:.1}W");
     }
     println!();
+
+    if let Some(b) = charge::behaviour() {
+        let lim = helper::request("charge status")
+            .ok()
+            .map(|l| charge::parse(&l).limit)
+            .filter(|l| *l > 0);
+        println!();
+        print!("charging        behaviour {b}");
+        match lim {
+            Some(l) => print!("  limit {l}%"),
+            None => print!("  no limit"),
+        }
+        match charge::ec_bypass() {
+            Some(true) => print!("  EC bypassing"),
+            Some(false) => print!("  EC charging"),
+            // Only root can read the EC; not being able to is normal here.
+            None => {}
+        }
+        println!();
+    }
 }
 
 fn restore() -> Result<()> {

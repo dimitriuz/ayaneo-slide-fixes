@@ -99,6 +99,22 @@ fn tdp_info() -> Result<String> {
     }
 }
 
+/// One line the GUI can parse, and a person can read.
+fn charge_status() -> String {
+    let ec = match crate::charge::ec_bypass() {
+        Some(true) => "on",
+        Some(false) => "off",
+        None => "?",
+    };
+    format!(
+        "behaviour={} limit={} capacity={} status={} ec_bypass={ec}",
+        crate::charge::behaviour().unwrap_or_else(|| "-".into()),
+        crate::charge::limit(),
+        crate::charge::capacity().map_or("-".into(), |c| c.to_string()),
+        crate::charge::status().unwrap_or_else(|| "-".into()),
+    )
+}
+
 fn set_profile(name: &str) -> Result<()> {
     // Only ever one of the values the kernel itself advertises.
     let choices = std::fs::read_to_string(crate::power::CHOICES).unwrap_or_default();
@@ -124,6 +140,17 @@ fn handle(stream: UnixStream) {
                 _ => Err(anyhow::anyhow!("tdp needs three integers, in watts")),
             },
             ["tdp", "info"] => tdp_info(),
+            ["charge", "status"] => Ok(charge_status()),
+            ["charge", "behaviour", what] => {
+                crate::charge::set_behaviour(what).map(|_| charge_status())
+            }
+            ["charge", "limit", "off"] => {
+                crate::charge::set_limit(0).map(|_| charge_status())
+            }
+            ["charge", "limit", pct] => match pct.parse::<u32>() {
+                Ok(p) => crate::charge::set_limit(p).map(|_| charge_status()),
+                Err(_) => Err(anyhow::anyhow!("charge limit needs a percentage or \"off\"")),
+            },
             ["profile", name] => set_profile(name).map(|_| "ok".into()),
             ["fan", "auto"] => {
                 // also clears a latched thermal trip
@@ -231,6 +258,8 @@ pub fn run() -> Result<()> {
     crate::fan::reset_at_start();
     // Supervises manual fan mode; see fan.rs for why this is not optional.
     crate::fan::start_monitor();
+    // Holds a saved charge limit, including before anyone has logged in.
+    crate::charge::start_monitor();
     // Hand the fan back to the EC on any orderly exit. The unit repeats this
     // in ExecStopPost so an unclean kill is covered too.
     for sig in [libc::SIGINT, libc::SIGTERM] {

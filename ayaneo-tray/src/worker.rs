@@ -29,6 +29,12 @@ pub enum Job {
     PollHelper,
     /// Read the SMU's actual power limits back.
     PollTdp,
+    /// Read charge behaviour, limit and battery state.
+    PollCharge,
+    /// "auto" or "inhibit-charge".
+    ChargeBehaviour(String),
+    /// 0 turns supervision off.
+    ChargeLimit(u32),
     /// InputPlumber: poll state, or act on it.
     PollIp,
     /// Load a profile, then re-apply the saved pointer speed it resets.
@@ -52,6 +58,17 @@ pub enum Msg {
     IpState(crate::inputplumber::Status),
     /// Result of PollTdp: the limits in watts, or why they could not be read.
     TdpLimits(Result<(u32, u32, u32), String>),
+    /// Fresh charge state.
+    ChargeState(crate::charge::Status),
+}
+
+/// A helper reply about charging, or an empty state if the helper is not there
+/// - which the page renders as "unavailable" rather than as an error banner.
+fn charge_msg(r: anyhow::Result<String>) -> Msg {
+    match r {
+        Ok(line) => Msg::ChargeState(crate::charge::parse(&line)),
+        Err(_) => Msg::ChargeState(crate::charge::Status::default()),
+    }
 }
 
 fn key(job: &Job) -> &'static str {
@@ -63,6 +80,9 @@ fn key(job: &Job) -> &'static str {
         Job::Helper(_) => "helper",
         Job::PollHelper => "poll",
         Job::PollTdp => "polltdp",
+        Job::PollCharge => "pollcharge",
+        Job::ChargeBehaviour(_) => "chgbehave",
+        Job::ChargeLimit(_) => "chglimit",
         Job::PollIp => "pollip",
         Job::IpProfile(..) => "ipprofile",
         Job::IpMouseSpeed(_) => "ipspeed",
@@ -165,6 +185,16 @@ fn run(
                 }
                 Err(e) => Err(e.to_string()),
             }),
+            // All three answer with the same status line, so one path reads it.
+            Job::PollCharge => charge_msg(helper::request("charge status")),
+            Job::ChargeBehaviour(b) => {
+                charge_msg(helper::request(&format!("charge behaviour {b}")))
+            }
+            Job::ChargeLimit(pct) => charge_msg(helper::request(&if pct == 0 {
+                "charge limit off".to_string()
+            } else {
+                format!("charge limit {pct}")
+            })),
             Job::PollIp => Msg::IpState(crate::inputplumber::status()),
             Job::IpProfile(path, speed) => match crate::inputplumber::load_profile(&path) {
                 Ok(()) => {
