@@ -26,22 +26,33 @@ enum Tab {
     Controller,
     Lighting,
     Power,
+    Fan,
+    Sensors,
     About,
 }
 
 impl Tab {
-    const ALL: [Tab; 4] = [Tab::Controller, Tab::Lighting, Tab::Power, Tab::About];
+    const ALL: [Tab; 6] = [
+        Tab::Controller,
+        Tab::Lighting,
+        Tab::Power,
+        Tab::Fan,
+        Tab::Sensors,
+        Tab::About,
+    ];
 
     fn index(self) -> usize {
         match self {
             Tab::Controller => 0,
             Tab::Lighting => 1,
             Tab::Power => 2,
-            Tab::About => 3,
+            Tab::Fan => 3,
+            Tab::Sensors => 4,
+            Tab::About => 5,
         }
     }
     fn label(self) -> &'static str {
-        ["Controller", "Lighting", "Power", "About"][self.index()]
+        ["Controller", "Lighting", "Power", "Fan", "Sensors", "About"][self.index()]
     }
     /// Splitting each section into its own page is what keeps any one screen
     /// down to a few large controls, which is the whole point on a handheld.
@@ -49,7 +60,9 @@ impl Tab {
         match self {
             Tab::Controller => &["Sticks", "Feel", "Triggers", "Gyro", "Turbo"],
             Tab::Lighting => &["Keyboard", "Rings"],
-            Tab::Power => &["Profile", "TDP", "Fan", "Sensors"],
+            Tab::Power => &["Profile", "TDP"],
+            // A single page needs no second row of navigation.
+            Tab::Fan | Tab::Sensors => &[],
             Tab::About => &["Info", "Display", "Devices"],
         }
     }
@@ -58,7 +71,7 @@ impl Tab {
 pub struct App {
     tab: Tab,
     /// Remembered per primary tab, so switching back returns where you were.
-    sub: [usize; 4],
+    sub: [usize; 6],
     settings: state::Settings,
     trusted: bool,
     devices: hw::Devices,
@@ -95,17 +108,19 @@ impl App {
             tab: match std::env::var("AYANEO_TRAY_TAB").unwrap_or_default().as_str() {
                 s if s.starts_with("lighting") => Tab::Lighting,
                 s if s.starts_with("power") => Tab::Power,
+                s if s.starts_with("fan") => Tab::Fan,
+                s if s.starts_with("sensors") => Tab::Sensors,
                 s if s.starts_with("about") => Tab::About,
                 _ => Tab::Controller,
             },
             sub: {
-                let mut v = [0usize; 4];
+                let mut v = [0usize; 6];
                 if let Some((_, n)) = std::env::var("AYANEO_TRAY_TAB")
                     .unwrap_or_default()
                     .split_once(':')
                 {
                     let n: usize = n.parse().unwrap_or(0);
-                    v = [n; 4];
+                    v = [n; 6];
                 }
                 v
             },
@@ -401,9 +416,7 @@ impl App {
     }
 
     fn power_tab(&mut self, ui: &mut egui::Ui, sub: usize) {
-        // Profile can sometimes be written directly; everything else needs the
-        // helper, so say so once rather than on every page.
-        if sub != 3 && sub != 0 && !self.helper_up {
+        if sub == 1 && !self.helper_up {
             unavailable(ui, "Helper not running", &None);
             hint(ui, "sudo systemctl enable --now ayaneo-tray-helper");
             if wide_button(ui, "Re-check").clicked() {
@@ -411,7 +424,6 @@ impl App {
             }
             return;
         }
-
         match sub {
             0 => {
                 if self.profiles.is_empty() {
@@ -450,7 +462,7 @@ impl App {
                 }
                 hint(ui, "The ACPI platform profile. Coarse, but the kernel's own interface.");
             }
-            1 => {
+            _ => {
                 let labels: Vec<String> =
                     power::TDP_PRESETS.iter().map(|(w, _)| format!("{w} W")).collect();
                 let opts: Vec<(u32, &str)> = power::TDP_PRESETS
@@ -473,109 +485,119 @@ impl App {
                      reading them back needs the ryzen_smu module.",
                 );
             }
-            2 => {
-                let cur = self.fan_mode;
-                let picked = row(ui, "Control", |ui| {
-                    segmented(
-                        ui,
-                        cur,
-                        &[(0u8, "Auto"), (1, "Manual"), (2, "Curve")],
-                    )
+        }
+    }
+
+    fn fan_tab(&mut self, ui: &mut egui::Ui) {
+        if !self.helper_up {
+            unavailable(ui, "Helper not running", &None);
+            hint(ui, "sudo systemctl enable --now ayaneo-tray-helper");
+            if wide_button(ui, "Re-check").clicked() {
+                self.submit(Job::PollHelper);
+            }
+            return;
+        }
+            let cur = self.fan_mode;
+            let picked = row(ui, "Control", |ui| {
+                segmented(
+                    ui,
+                    cur,
+                    &[(0u8, "Auto"), (1, "Manual"), (2, "Curve")],
+                )
+            });
+            if let Some(m) = picked {
+                self.fan_mode = m;
+                let req = match m {
+                    1 => format!("fan manual {}", self.settings.fan_pct),
+                    2 => format!("fan curve {}", Self::curve_spec(&self.settings.fan_curve)),
+                    _ => "fan auto".to_string(),
+                };
+                self.submit(Job::Helper(req));
+                self.settings.fan_mode =
+                    Some(["auto", "manual", "curve"][m as usize].to_string());
+                let _ = state::save(&self.settings);
+                self.status = format!("Fan: {}…", ["automatic", "manual", "curve"][m as usize]);
+            }
+
+            if self.fan_mode == 1 {
+                let mut pct = self.settings.fan_pct;
+                let commit = row(ui, "Speed", |ui| {
+                    let s = ui.add_enabled_ui(true, |ui| slider(ui, &mut pct, 20..=100, " %")).inner;
+                    s.drag_stopped() || s.lost_focus()
                 });
-                if let Some(m) = picked {
-                    self.fan_mode = m;
-                    let req = match m {
-                        1 => format!("fan manual {}", self.settings.fan_pct),
-                        2 => format!("fan curve {}", Self::curve_spec(&self.settings.fan_curve)),
-                        _ => "fan auto".to_string(),
-                    };
-                    self.submit(Job::Helper(req));
-                    self.settings.fan_mode =
-                        Some(["auto", "manual", "curve"][m as usize].to_string());
+                self.settings.fan_pct = pct;
+                if commit {
+                    self.submit(Job::Helper(format!("fan manual {pct}")));
                     let _ = state::save(&self.settings);
-                    self.status = format!("Fan: {}…", ["automatic", "manual", "curve"][m as usize]);
-                }
-
-                if self.fan_mode == 1 {
-                    let mut pct = self.settings.fan_pct;
-                    let commit = row(ui, "Speed", |ui| {
-                        let s = ui.add_enabled_ui(true, |ui| slider(ui, &mut pct, 20..=100, " %")).inner;
-                        s.drag_stopped() || s.lost_focus()
-                    });
-                    self.settings.fan_pct = pct;
-                    if commit {
-                        self.submit(Job::Helper(format!("fan manual {pct}")));
-                        let _ = state::save(&self.settings);
-                        self.status = format!("Fan: manual {pct}%…");
-                    }
-                    hint(
-                        ui,
-                        "Speed is the PWM duty cycle — the share of time the fan is driven, \
-                         which is what the hardware actually takes. It is commanded, not \
-                         measured: this machine has no tachometer.",
-                    );
-                } else if self.fan_mode == 2 {
-                    let live = self.telemetry.temps.iter().find(|(n, _)| n == "CPU").map(|(_, v)| *v);
-                    let mut pts = self.settings.fan_curve.clone();
-                    let moved = fan_curve(ui, &mut pts, live, (40.0, 95.0), (20.0, 100.0));
-                    if moved {
-                        self.settings.fan_curve = pts;
-                        self.curve_dirty = Some(Instant::now());
-                    }
-                    if let Some(t) = live {
-                        let target = crate::fan::curve_speed(&self.settings.fan_curve, t);
-                        row(ui, "Now", |ui| {
-                            ui.label(
-                                egui::RichText::new(format!("{t:.0} °C  ->  {target} %")).size(17.0),
-                            );
-                        });
-                    }
-                    if wide_button(ui, "Reset curve").clicked() {
-                        self.settings.fan_curve = crate::fan::default_curve();
-                        self.curve_dirty = Some(Instant::now());
-                    }
-                    hint(
-                        ui,
-                        "Drag a point to reshape the curve. The orange line is the current \
-                         CPU temperature. Speeds below 20% are refused, and the helper \
-                         applies the curve itself every two seconds — the EC has no curve \
-                         of its own.",
-                    );
-                }
-
-                if !self.fan_note.is_empty() {
-                    ui.label(
-                        egui::RichText::new(&self.fan_note)
-                            .color(egui::Color32::from_rgb(226, 150, 70)),
-                    );
+                    self.status = format!("Fan: manual {pct}%…");
                 }
                 hint(
                     ui,
-                    "Above 90 °C the helper hands the fan back to the EC and latches until \
-                     you press Auto; in curve mode it first forces full speed at 80 °C \
-                     rather than taking control away mid-game.",
+                    "Speed is the PWM duty cycle — the share of time the fan is driven, \
+                     which is what the hardware actually takes. It is commanded, not \
+                     measured: this machine has no tachometer.",
+                );
+            } else if self.fan_mode == 2 {
+                let live = self.telemetry.temps.iter().find(|(n, _)| n == "CPU").map(|(_, v)| *v);
+                let mut pts = self.settings.fan_curve.clone();
+                let moved = fan_curve(ui, &mut pts, live, (40.0, 95.0), (20.0, 100.0));
+                if moved {
+                    self.settings.fan_curve = pts;
+                    self.curve_dirty = Some(Instant::now());
+                }
+                if let Some(t) = live {
+                    let target = crate::fan::curve_speed(&self.settings.fan_curve, t);
+                    row(ui, "Now", |ui| {
+                        ui.label(
+                            egui::RichText::new(format!("{t:.0} °C  ->  {target} %")).size(17.0),
+                        );
+                    });
+                }
+                if wide_button(ui, "Reset curve").clicked() {
+                    self.settings.fan_curve = crate::fan::default_curve();
+                    self.curve_dirty = Some(Instant::now());
+                }
+                hint(
+                    ui,
+                    "Drag a point to reshape the curve. The orange line is the current \
+                     CPU temperature. Speeds below 20% are refused, and the helper \
+                     applies the curve itself every two seconds — the EC has no curve \
+                     of its own.",
                 );
             }
-            _ => {
-                for (n, v) in &self.telemetry.temps {
-                    row(ui, n, |ui| {
-                        ui.label(egui::RichText::new(format!("{v:.0} °C")).size(19.0));
-                    });
-                }
-                if let Some(p) = self.telemetry.battery_pct {
-                    let st = self.telemetry.battery_status.clone().unwrap_or_default();
-                    row(ui, "Battery", |ui| {
-                        ui.label(egui::RichText::new(format!("{p} %  {st}")).size(19.0));
-                    });
-                }
-                if let Some(w) = self.telemetry.power_now_w {
-                    row(ui, "Draw", |ui| {
-                        ui.label(egui::RichText::new(format!("{w:.1} W")).size(19.0));
-                    });
-                }
-                hint(ui, "Read-only, straight from hwmon and power_supply.");
+
+            if !self.fan_note.is_empty() {
+                ui.label(
+                    egui::RichText::new(&self.fan_note)
+                        .color(egui::Color32::from_rgb(226, 150, 70)),
+                );
             }
-        }
+            hint(
+                ui,
+                "Above 90 °C the helper hands the fan back to the EC and latches until \
+                 you press Auto; in curve mode it first forces full speed at 80 °C \
+                 rather than taking control away mid-game.",
+            );
+    }
+
+    fn sensors_tab(&mut self, ui: &mut egui::Ui) {
+            for (n, v) in &self.telemetry.temps {
+                row(ui, n, |ui| {
+                    ui.label(egui::RichText::new(format!("{v:.0} °C")).size(19.0));
+                });
+            }
+            if let Some(p) = self.telemetry.battery_pct {
+                let st = self.telemetry.battery_status.clone().unwrap_or_default();
+                row(ui, "Battery", |ui| {
+                    ui.label(egui::RichText::new(format!("{p} %  {st}")).size(19.0));
+                });
+            }
+            if let Some(w) = self.telemetry.power_now_w {
+                row(ui, "Draw", |ui| {
+                    ui.label(egui::RichText::new(format!("{w:.1} W")).size(19.0));
+                });
+            }
+            hint(ui, "Read-only, straight from hwmon and power_supply.");
     }
 
     fn about_tab(&mut self, ui: &mut egui::Ui, sub: usize) {
@@ -737,6 +759,7 @@ impl eframe::App for App {
                 self.sub[idx] = 0;
             }
             ui.add_space(6.0);
+            if !subs.is_empty() {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
                 for (i, name) in subs.iter().enumerate() {
@@ -753,12 +776,15 @@ impl eframe::App for App {
             });
             ui.add_space(4.0);
             ui.separator();
+            }
             ui.add_space(6.0);
             let sub = self.sub[idx];
             egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| match tab {
                 Tab::Controller => self.controller_tab(ui, sub),
                 Tab::Lighting => self.lighting_tab(ui, sub),
                 Tab::Power => self.power_tab(ui, sub),
+                Tab::Fan => self.fan_tab(ui),
+                Tab::Sensors => self.sensors_tab(ui),
                 Tab::About => self.about_tab(ui, sub),
             });
         });
