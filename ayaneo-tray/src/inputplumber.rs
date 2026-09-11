@@ -40,6 +40,9 @@ pub const TARGETS: [(&str, &str); 6] = [
 /// target is a Steam Deck: Steam claims that controller and drives the pointer
 /// itself, bypassing both this and the desktop's own pointer settings.
 pub const SPEED_RANGE: (u32, u32) = (100, 2000);
+/// Deadzone as a percentage of full stick deflection. The upstream default is
+/// a hardcoded 20%; the patch in patches/inputplumber/ makes it configurable.
+pub const DEADZONE_RANGE: (u32, u32) = (0, 40);
 
 #[derive(Default, Clone)]
 pub struct Status {
@@ -52,6 +55,8 @@ pub struct Status {
     pub manage_all: bool,
     /// None when the loaded profile has no stick-to-mouse mapping.
     pub mouse_speed: Option<u32>,
+    /// Mouse deadzone in percent, if the profile carries one.
+    pub mouse_deadzone: Option<u32>,
 }
 
 fn busctl(args: &[&str]) -> Option<String> {
@@ -93,7 +98,10 @@ pub fn status() -> Status {
             }
         }
     }
-    st.mouse_speed = profile_yaml().as_deref().and_then(parse_speed);
+    if let Some(y) = profile_yaml() {
+        st.mouse_speed = parse_speed(&y);
+        st.mouse_deadzone = parse_deadzone(&y);
+    }
     st
 }
 
@@ -132,23 +140,54 @@ fn parse_speed(yaml: &str) -> Option<u32> {
     yaml[i + 10..].trim_start().split_whitespace().next()?.parse().ok()
 }
 
+/// The mouse deadzone, as a percentage. Only the one under `motion:` counts -
+/// a `deadzone` on an axis governs axis-to-button translation and has nothing
+/// to do with the pointer.
+fn parse_deadzone(yaml: &str) -> Option<u32> {
+    let m = yaml.find("motion:")?;
+    let rest = &yaml[m..];
+    let i = rest.find("deadzone:")?;
+    let v: f64 = rest[i + 9..].trim_start().split_whitespace().next()?.parse().ok()?;
+    Some((v * 100.0).round() as u32)
+}
+
+/// Replace a numeric field in the live profile and reload it.
+fn set_field(key: &str, value: &str, after: Option<&str>) -> Result<(), String> {
+    let yaml = profile_yaml().ok_or("could not read the current profile")?;
+    let base = match after {
+        Some(a) => yaml.find(a).ok_or("this profile has no mouse mapping")?,
+        None => 0,
+    };
+    let i = base
+        + yaml[base..]
+            .find(&format!("{key}:"))
+            .ok_or_else(|| format!("this profile has no {key}"))?;
+    let rest = &yaml[i + key.len() + 1..];
+    let lead = rest.len() - rest.trim_start().len();
+    let old: String = rest.trim_start()
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    if old.is_empty() {
+        return Err(format!("could not parse {key}"));
+    }
+    let new = format!("{}{key}: {value}{}", &yaml[..i], &rest[lead + old.len()..]);
+    busctl(&["--system", "call", SERVICE, COMPOSITE, COMPOSITE_IF, "LoadProfileFromYaml", "s", &new])
+        .map(|_| ())
+        .ok_or_else(|| "InputPlumber rejected the profile".to_string())
+}
+
+/// Pointer deadzone, as a percentage of full deflection.
+pub fn set_mouse_deadzone(pct: u32) -> Result<(), String> {
+    set_field("deadzone", &format!("{:.2}", pct as f64 / 100.0), Some("motion:"))
+}
+
 /// Rewrite speed_pps in the live profile and reload it.
 ///
 /// This edits the running profile rather than the file on disk, so it needs no
 /// privilege - and equally does not survive the profile being loaded again.
 pub fn set_mouse_speed(pps: u32) -> Result<(), String> {
-    let yaml = profile_yaml().ok_or("could not read the current profile")?;
-    let i = yaml.find("speed_pps:").ok_or("this profile has no mouse mapping")?;
-    let rest = &yaml[i + 10..];
-    let digits: String = rest.trim_start().chars().take_while(|c| c.is_ascii_digit()).collect();
-    if digits.is_empty() {
-        return Err("could not parse speed_pps".into());
-    }
-    let lead = rest.len() - rest.trim_start().len();
-    let new = format!("{}speed_pps: {}{}", &yaml[..i], pps, &rest[lead + digits.len()..]);
-    busctl(&["--system", "call", SERVICE, COMPOSITE, COMPOSITE_IF, "LoadProfileFromYaml", "s", &new])
-        .map(|_| ())
-        .ok_or_else(|| "InputPlumber rejected the profile".to_string())
+    set_field("speed_pps", &pps.to_string(), None)
 }
 
 /// Profiles from both the packaged and the local directory, local last so a

@@ -36,6 +36,9 @@ pub struct Settings {
     /// InputPlumber pointer speed, re-applied after a profile load.
     #[serde(default)]
     pub ip_mouse_speed: Option<u32>,
+    /// InputPlumber pointer deadzone, percent.
+    #[serde(default)]
+    pub ip_mouse_deadzone: Option<u32>,
 }
 
 fn default_fan_pct() -> u8 {
@@ -59,6 +62,7 @@ impl Default for Settings {
             fan_mode: None,
             fan_pct: default_fan_pct(),
             ip_mouse_speed: None,
+            ip_mouse_deadzone: None,
         }
     }
 }

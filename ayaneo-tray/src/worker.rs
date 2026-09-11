@@ -32,6 +32,7 @@ pub enum Job {
     /// Load a profile, then re-apply the saved pointer speed it resets.
     IpProfile(std::path::PathBuf, Option<u32>),
     IpMouseSpeed(u32),
+    IpMouseDeadzone(u32),
     IpTarget(String),
     IpManageAll(bool),
 }
@@ -60,6 +61,7 @@ fn key(job: &Job) -> &'static str {
         Job::PollIp => "pollip",
         Job::IpProfile(..) => "ipprofile",
         Job::IpMouseSpeed(_) => "ipspeed",
+        Job::IpMouseDeadzone(_) => "ipdz",
         Job::IpTarget(_) => "iptarget",
         Job::IpManageAll(_) => "ipmanage",
     }
@@ -161,6 +163,10 @@ fn run(
                 Err(e) => Msg::Status(e),
             },
             Job::IpMouseSpeed(pps) => match crate::inputplumber::set_mouse_speed(pps) {
+                Ok(()) => Msg::IpState(crate::inputplumber::status()),
+                Err(e) => Msg::Status(e),
+            },
+            Job::IpMouseDeadzone(pct) => match crate::inputplumber::set_mouse_deadzone(pct) {
                 Ok(()) => Msg::IpState(crate::inputplumber::status()),
                 Err(e) => Msg::Status(e),
             },

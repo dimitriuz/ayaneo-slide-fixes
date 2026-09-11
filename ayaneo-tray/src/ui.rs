@@ -687,10 +687,37 @@ impl App {
                  desktop's own mouse settings stop applying. Switch to an Xbox target \
                  to get both this and the desktop settings back.",
             );
+            if let Some(dz_cur) = self.ip.mouse_deadzone {
+                let mut dz = self.settings.ip_mouse_deadzone.unwrap_or(dz_cur);
+                let commit = row(ui, "Deadzone", |ui| {
+                    let r = ui.add(
+                        egui::Slider::new(
+                            &mut dz,
+                            crate::inputplumber::DEADZONE_RANGE.0
+                                ..=crate::inputplumber::DEADZONE_RANGE.1,
+                        )
+                        .suffix(" %"),
+                    );
+                    r.drag_stopped() || r.lost_focus()
+                });
+                if commit && Some(dz) != self.settings.ip_mouse_deadzone {
+                    self.settings.ip_mouse_deadzone = Some(dz);
+                    let _ = state::save(&self.settings);
+                    self.submit(Job::IpMouseDeadzone(dz));
+                    self.status = format!("Pointer deadzone {dz}%…");
+                }
+                hint(
+                    ui,
+                    "How far the stick must move before the cursor does. Raise it if the \
+                     cursor drifts or creeps when you are not touching the stick; lower \
+                     it for finer control. Upstream hardcodes 20% — the patch in \
+                     patches/inputplumber makes it settable.",
+                );
+            }
             hint(
                 ui,
-                "Applied to the running profile, so loading a profile from elsewhere \
-                 resets it — this tab re-applies it automatically.",
+                "Both are applied to the running profile, so loading a profile from \
+                 elsewhere resets them — this tab re-applies them automatically.",
             );
         }
 
