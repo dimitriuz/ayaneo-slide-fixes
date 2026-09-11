@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 
-use crate::{gamepad, helper, kbdlight, rings, state::Settings};
+use crate::{gamepad, helper, kbdlight, rings};
 
 pub enum Job {
     /// Re-run device discovery. Needed because hardware can appear late: on a

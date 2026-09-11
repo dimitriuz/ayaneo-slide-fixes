@@ -65,7 +65,8 @@ impl Tab {
             Tab::Lighting => &["Keyboard", "Rings"],
             Tab::Power => &["Profile", "TDP"],
             // A single page needs no second row of navigation.
-            Tab::Fan | Tab::Sensors | Tab::Input => &[],
+            Tab::Input => &["Profile", "Pointer", "Target", "Service"],
+            Tab::Fan | Tab::Sensors => &[],
             Tab::About => &["Info", "Display", "Devices"],
         }
     }
@@ -610,7 +611,7 @@ impl App {
             hint(ui, "Read-only, straight from hwmon and power_supply.");
     }
 
-    fn input_tab(&mut self, ui: &mut egui::Ui) {
+    fn input_tab(&mut self, ui: &mut egui::Ui, sub: usize) {
         if !self.ip.running {
             unavailable(ui, "InputPlumber", &Some("not responding on the system bus".into()));
             if self.helper_up && wide_button(ui, "Start InputPlumber").clicked() {
@@ -623,164 +624,173 @@ impl App {
             return;
         }
 
-        row(ui, "Device", |ui| {
-            ui.label(egui::RichText::new(&self.ip.device).size(17.0));
-        });
-        row(ui, "Profile", |ui| {
-            ui.label(egui::RichText::new(&self.ip.profile).size(17.0));
-        });
-
-        ui.add_space(8.0);
-        ui.label(egui::RichText::new("Switch profile").strong());
-        hint(
-            ui,
-            "The profile decides what each control does. \"Default\" has no \
-             stick-to-mouse mapping, so switching to it is how you turn the \
-             right-stick mouse off.",
-        );
-        let profiles = self.ip_profiles.clone();
-        let mut chosen: Option<std::path::PathBuf> = None;
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-            for (label, path) in &profiles {
-                let selected = self.ip.profile == *label;
-                let mut b = egui::Button::new(egui::RichText::new(label).size(15.0))
-                    .min_size(egui::vec2(0.0, crate::widgets::TOUCH_H));
-                if selected {
-                    b = b.fill(ui.visuals().selection.bg_fill);
-                }
-                if ui.add(b).clicked() {
-                    chosen = Some(path.clone());
+        match sub {
+            0 => {
+                row(ui, "Device", |ui| {
+                    ui.label(egui::RichText::new(&self.ip.device).size(17.0));
+                });
+                row(ui, "Active", |ui| {
+                    ui.label(egui::RichText::new(&self.ip.profile).size(17.0));
+                });
+                ui.add_space(8.0);
+                hint(
+                    ui,
+                    "The profile decides what each control does. \"Default\" has no \
+                     stick-to-mouse mapping, so switching to it is how you turn the \
+                     right-stick mouse off.",
+                );
+                let profiles = self.ip_profiles.clone();
+                let mut chosen: Option<std::path::PathBuf> = None;
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    for (label, path) in &profiles {
+                        let selected = self.ip.profile == *label;
+                        let mut b = egui::Button::new(egui::RichText::new(label).size(15.0))
+                            .min_size(egui::vec2(0.0, crate::widgets::TOUCH_H));
+                        if selected {
+                            b = b.fill(ui.visuals().selection.bg_fill);
+                        }
+                        if ui.add(b).clicked() {
+                            chosen = Some(path.clone());
+                        }
+                    }
+                });
+                if let Some(p) = chosen {
+                    self.submit(Job::IpProfile(p, self.settings.ip_mouse_speed));
+                    self.status = "Loading profile…".into();
                 }
             }
-        });
-        if let Some(p) = chosen {
-            self.submit(Job::IpProfile(p, self.settings.ip_mouse_speed));
-            self.status = "Loading profile…".into();
-        }
-
-        if let Some(cur) = self.ip.mouse_speed {
-            ui.add_space(10.0);
-            ui.label(egui::RichText::new("Pointer speed").strong());
-            let mut pps = self.settings.ip_mouse_speed.unwrap_or(cur);
-            let commit = row(ui, "Speed", |ui| {
-                let r = ui.add(
-                    egui::Slider::new(
+            1 => {
+                let Some(cur) = self.ip.mouse_speed else {
+                    hint(
+                        ui,
+                        "This profile has no stick-to-mouse mapping, so there is no \
+                         pointer to tune. Pick a profile that maps a stick to the mouse.",
+                    );
+                    return;
+                };
+                let mut pps = self.settings.ip_mouse_speed.unwrap_or(cur);
+                let commit = row(ui, "Speed", |ui| {
+                    let r = slider(
+                        ui,
                         &mut pps,
                         crate::inputplumber::SPEED_RANGE.0..=crate::inputplumber::SPEED_RANGE.1,
-                    )
-                    .suffix(" px/s"),
-                );
-                r.drag_stopped() || r.lost_focus()
-            });
-            if commit && Some(pps) != self.settings.ip_mouse_speed {
-                self.settings.ip_mouse_speed = Some(pps);
-                let _ = state::save(&self.settings);
-                self.submit(Job::IpMouseSpeed(pps));
-                self.status = format!("Pointer speed {pps} px/s…");
-            }
-            hint(
-                ui,
-                "How fast the stick moves the cursor through InputPlumber. This does \
-                 nothing while the emulated controller is a Steam Deck: Steam claims \
-                 that controller and drives the pointer itself, which is also why the \
-                 desktop's own mouse settings stop applying. Switch to an Xbox target \
-                 to get both this and the desktop settings back.",
-            );
-            if let Some(dz_cur) = self.ip.mouse_deadzone {
-                let mut dz = self.settings.ip_mouse_deadzone.unwrap_or(dz_cur);
-                let commit = row(ui, "Deadzone", |ui| {
-                    let r = ui.add(
-                        egui::Slider::new(
-                            &mut dz,
-                            crate::inputplumber::DEADZONE_RANGE.0
-                                ..=crate::inputplumber::DEADZONE_RANGE.1,
-                        )
-                        .suffix(" %"),
+                        " px/s",
                     );
                     r.drag_stopped() || r.lost_focus()
                 });
-                if commit && Some(dz) != self.settings.ip_mouse_deadzone {
-                    self.settings.ip_mouse_deadzone = Some(dz);
+                if commit && Some(pps) != self.settings.ip_mouse_speed {
+                    self.settings.ip_mouse_speed = Some(pps);
                     let _ = state::save(&self.settings);
-                    self.submit(Job::IpMouseDeadzone(dz));
-                    self.status = format!("Pointer deadzone {dz}%…");
+                    self.submit(Job::IpMouseSpeed(pps));
+                    self.status = format!("Pointer speed {pps} px/s…");
+                }
+
+                if let Some(dz_cur) = self.ip.mouse_deadzone {
+                    let mut dz = self.settings.ip_mouse_deadzone.unwrap_or(dz_cur);
+                    let commit = row(ui, "Deadzone", |ui| {
+                        let r = slider(
+                            ui,
+                            &mut dz,
+                            crate::inputplumber::DEADZONE_RANGE.0
+                                ..=crate::inputplumber::DEADZONE_RANGE.1,
+                            " %",
+                        );
+                        r.drag_stopped() || r.lost_focus()
+                    });
+                    if commit && Some(dz) != self.settings.ip_mouse_deadzone {
+                        self.settings.ip_mouse_deadzone = Some(dz);
+                        let _ = state::save(&self.settings);
+                        self.submit(Job::IpMouseDeadzone(dz));
+                        self.status = format!("Pointer deadzone {dz}%…");
+                    }
+                    hint(
+                        ui,
+                        "How far the stick must move before the cursor does. Raise it if \
+                         the cursor drifts, or creeps when you squeeze a trigger — run \
+                         `sudo crosstalk` to measure how much it needs.",
+                    );
                 }
                 hint(
                     ui,
-                    "How far the stick must move before the cursor does. Raise it if the \
-                     cursor drifts or creeps when you are not touching the stick; lower \
-                     it for finer control. Upstream hardcodes 20% — the patch in \
-                     patches/inputplumber makes it settable.",
+                    "Neither does anything while the emulated controller is a Steam Deck: \
+                     Steam claims that controller and drives the pointer itself, which is \
+                     also why the desktop's mouse settings stop applying.",
+                );
+                hint(
+                    ui,
+                    "Applied to the running profile, so loading a profile elsewhere resets \
+                     them — this tab re-applies them automatically.",
                 );
             }
-            hint(
-                ui,
-                "Both are applied to the running profile, so loading a profile from \
-                 elsewhere resets them — this tab re-applies them automatically.",
-            );
-        }
-
-        ui.add_space(10.0);
-        ui.label(egui::RichText::new("Emulated controller").strong());
-        let cur = self.ip.target.clone().unwrap_or_default();
-        let opts: Vec<(&str, &str)> =
-            crate::inputplumber::TARGETS.iter().map(|(id, l)| (*id, *l)).collect();
-        let picked = segmented(ui, cur.as_str(), &opts);
-        if let Some(id) = picked {
-            self.submit(Job::IpTarget(id.to_string()));
-            self.status = format!("Switching to {id}…");
-        }
-        hint(
-            ui,
-            "What games actually see. The Steam Deck target speaks HID and has no \
-             /dev/input node, so titles outside Steam often cannot find it — switch to \
-             an Xbox target if a game does not detect the controller.",
-        );
-
-        ui.add_space(10.0);
-        let manage = self.ip.manage_all;
-        if let Some(v) = row(ui, "Manage all", |ui| toggle(ui, manage)) {
-            self.submit(Job::IpManageAll(v));
-            self.status = "Applying…".into();
-        }
-        hint(
-            ui,
-            "Whether InputPlumber picks up devices it has no configuration for — \
-             external controllers, mostly. It does not change anything for this \
-             handheld: its own config sets auto_manage, and auto-managed devices are \
-             skipped when this is switched off, so the built-in controller stays \
-             managed either way.",
-        );
-
-        if self.helper_up {
-            ui.add_space(12.0);
-            let half = ((ui.available_width() - 10.0) / 2.0).max(110.0);
-            let mut restart = false;
-            let mut stop = false;
-            ui.horizontal(|ui| {
-                restart = ui
-                    .add_sized(
-                        egui::vec2(half, crate::widgets::TOUCH_H),
-                        egui::Button::new("Restart service"),
-                    )
-                    .clicked();
-                stop = ui
-                    .add_sized(
-                        egui::vec2(half, crate::widgets::TOUCH_H),
-                        egui::Button::new("Stop service"),
-                    )
-                    .clicked();
-            });
-            if restart {
-                self.submit(Job::Helper("service inputplumber restart".into()));
-                self.status = "Restarting InputPlumber…".into();
+            2 => {
+                let cur = self.ip.target.clone().unwrap_or_default();
+                let opts: Vec<(&str, &str)> =
+                    crate::inputplumber::TARGETS.iter().map(|(id, l)| (*id, *l)).collect();
+                let picked = segmented(ui, cur.as_str(), &opts);
+                if let Some(id) = picked {
+                    self.submit(Job::IpTarget(id.to_string()));
+                    self.status = format!("Switching to {id}…");
+                }
+                ui.add_space(6.0);
+                hint(
+                    ui,
+                    "What games actually see. The Steam Deck target speaks HID and has no \
+                     /dev/input node, so titles outside Steam often cannot find it — \
+                     switch to an Xbox target if a game does not detect the controller.",
+                );
             }
-            if stop {
-                self.submit(Job::Helper("service inputplumber stop".into()));
-                self.status = "Stopping InputPlumber…".into();
+            _ => {
+                let manage = self.ip.manage_all;
+                if let Some(v) = row(ui, "Manage all", |ui| toggle(ui, manage)) {
+                    self.submit(Job::IpManageAll(v));
+                    self.status = "Applying…".into();
+                }
+                hint(
+                    ui,
+                    "Whether InputPlumber picks up devices it has no configuration for — \
+                     external controllers, mostly. It does not change anything for this \
+                     handheld: its own config sets auto_manage, and auto-managed devices \
+                     are skipped when this is switched off, so the built-in controller \
+                     stays managed either way.",
+                );
+
+                if self.helper_up {
+                    ui.add_space(12.0);
+                    let half = ((ui.available_width() - 10.0) / 2.0).max(110.0);
+                    let mut restart = false;
+                    let mut stop = false;
+                    ui.horizontal(|ui| {
+                        restart = ui
+                            .add_sized(
+                                egui::vec2(half, crate::widgets::TOUCH_H),
+                                egui::Button::new("Restart service"),
+                            )
+                            .clicked();
+                        stop = ui
+                            .add_sized(
+                                egui::vec2(half, crate::widgets::TOUCH_H),
+                                egui::Button::new("Stop service"),
+                            )
+                            .clicked();
+                    });
+                    if restart {
+                        self.submit(Job::Helper("service inputplumber restart".into()));
+                        self.status = "Restarting InputPlumber…".into();
+                    }
+                    if stop {
+                        self.submit(Job::Helper("service inputplumber stop".into()));
+                        self.status = "Stopping InputPlumber…".into();
+                    }
+                    hint(
+                        ui,
+                        "Stopping it hands the pad back to the kernel and takes the \
+                         stick-as-mouse with it.",
+                    );
+                }
+                ui.add_space(8.0);
+                hint(ui, &format!("InputPlumber {}", self.ip.version));
             }
-            hint(ui, &format!("InputPlumber {}", self.ip.version));
         }
     }
 
@@ -1002,7 +1012,7 @@ impl eframe::App for App {
                 Tab::Power => self.power_tab(ui, sub),
                 Tab::Fan => self.fan_tab(ui),
                 Tab::Sensors => self.sensors_tab(ui),
-                Tab::Input => self.input_tab(ui),
+                Tab::Input => self.input_tab(ui, sub),
                 Tab::About => self.about_tab(ui, sub),
                 }
                 // Trailing space. egui measures wrapped text slightly short, so

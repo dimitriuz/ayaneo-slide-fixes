@@ -42,8 +42,12 @@ pub fn slider<T: egui::emath::Numeric>(
     range: std::ops::RangeInclusive<T>,
     suffix: &str,
 ) -> Response {
-    // leave room for the value readout egui draws beside the track
-    ui.spacing_mut().slider_width = (ui.available_width() - 76.0).max(90.0);
+    // Leave room for the value readout egui draws beside the track. It is sized
+    // for the widest text it can hold - "2000 px/s" needs visibly more than
+    // "40 %", and guessing one width for both clips the longer one.
+    let digits = format!("{:.0}", range.end().to_f64()).len();
+    let reserve = (34.0 + (digits + suffix.len()) as f32 * 9.0).max(76.0);
+    ui.spacing_mut().slider_width = (ui.available_width() - reserve).max(90.0);
     ui.add(egui::Slider::new(value, range).suffix(suffix))
 }
 
