@@ -11,7 +11,7 @@
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
-use crate::widgets::{hint, row, segmented, slider, swatch, toggle, unavailable, wide_button};
+use crate::widgets::{colour_editor, hint, row, segmented, slider, toggle, unavailable, wide_button};
 
 const SENS_LABELS: [&str; 3] = ["50", "100", "150"];
 use crate::worker::{Job, Msg, Worker};
@@ -73,6 +73,8 @@ pub struct App {
     fan_manual: bool,
     fan_pct: u8,
     fan_note: String,
+    kbd_custom: bool,
+    rings_custom: bool,
     style_applied: bool,
     worker: Option<Worker>,
     last_reprobe: Instant,
@@ -120,6 +122,10 @@ impl App {
             fan_manual: false,
             fan_pct: 45,
             fan_note: String::new(),
+            // same debug spirit as AYANEO_TRAY_TAB: lets the expanded editor be
+            // opened and checked without clicking into it
+            kbd_custom: std::env::var("AYANEO_TRAY_CUSTOM").is_ok(),
+            rings_custom: std::env::var("AYANEO_TRAY_CUSTOM").is_ok(),
             style_applied: false,
             worker: None,
             last_reprobe: Instant::now(),
@@ -302,29 +308,6 @@ impl App {
         }
     }
 
-    /// Preset swatches plus a picker, on one touch-sized row.
-    fn colour_row(ui: &mut egui::Ui, colour: &mut u32, presets: &[u32]) -> bool {
-        let mut changed = false;
-        ui.horizontal_wrapped(|ui| {
-            for p in presets {
-                if swatch(ui, *p, *colour == *p).clicked() {
-                    *colour = *p;
-                    changed = true;
-                }
-            }
-            let mut rgb = [
-                ((*colour >> 16) & 0xFF) as u8,
-                ((*colour >> 8) & 0xFF) as u8,
-                (*colour & 0xFF) as u8,
-            ];
-            if egui::color_picker::color_edit_button_srgb(ui, &mut rgb).changed() {
-                *colour = ((rgb[0] as u32) << 16) | ((rgb[1] as u32) << 8) | rgb[2] as u32;
-                changed = true;
-            }
-        });
-        changed
-    }
-
     fn lighting_tab(&mut self, ui: &mut egui::Ui, sub: usize) {
         if sub == 0 {
             if self.devices.kbd.is_none() {
@@ -339,11 +322,12 @@ impl App {
                     ch = true;
                 }
             });
-            row(ui, "Colour", |ui| {
-                if Self::colour_row(ui, &mut k.color, &kbdlight::PRESETS) {
-                    ch = true;
-                }
-            });
+            let mut open = self.kbd_custom;
+            ui.label(egui::RichText::new("Colour").strong());
+            if colour_editor(ui, &mut k.color, &kbdlight::PRESETS, &mut open) {
+                ch = true;
+            }
+            self.kbd_custom = open;
             row(ui, "Effect", |ui| {
                 if let Some(v) = segmented(ui, k.mode, &kbdlight::MODES) {
                     k.mode = v;
@@ -377,11 +361,12 @@ impl App {
             }
             let mut r = self.settings.rings;
             let mut ch = false;
-            row(ui, "Colour", |ui| {
-                if Self::colour_row(ui, &mut r.color, &rings::PRESETS) {
-                    ch = true;
-                }
-            });
+            let mut open = self.rings_custom;
+            ui.label(egui::RichText::new("Colour").strong());
+            if colour_editor(ui, &mut r.color, &rings::PRESETS, &mut open) {
+                ch = true;
+            }
+            self.rings_custom = open;
             row(ui, "Brightness", |ui| {
                 if slider(ui, &mut r.brightness, 0..=255, "").changed() {
                     ch = true;

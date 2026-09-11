@@ -134,3 +134,58 @@ pub fn unavailable(ui: &mut Ui, what: &str, err: &Option<String>) {
         "Install 70-ayaneo-tray.rules, then: sudo udevadm control --reload && sudo udevadm trigger",
     );
 }
+
+/// Preset swatches plus an inline RGB editor.
+///
+/// egui's `color_edit_button_srgb` opens a popup with a saturation/value square
+/// and a hue strip, which is taller than a handheld window: on this panel the
+/// square was clipped by the window edge and the hue strip was off-screen
+/// entirely, with no way to scroll a popup. So the custom editor is inline,
+/// built from the same rows and sliders as the rest of the interface, and it
+/// cannot overflow because it is part of the scrolling page.
+pub fn colour_editor(ui: &mut Ui, colour: &mut u32, presets: &[u32], open: &mut bool) -> bool {
+    let mut changed = false;
+    ui.horizontal_wrapped(|ui| {
+        for p in presets {
+            if swatch(ui, *p, *colour == *p).clicked() {
+                *colour = *p;
+                changed = true;
+            }
+        }
+        let is_preset = presets.contains(colour);
+        let mut b = Button::new(RichText::new("Custom").size(15.0))
+            .min_size(vec2(96.0, TOUCH_H));
+        if *open || !is_preset {
+            b = b.fill(ui.visuals().selection.bg_fill);
+        }
+        if ui.add(b).clicked() {
+            *open = !*open;
+        }
+    });
+
+    if *open {
+        let (mut r, mut g, mut b) = (
+            ((*colour >> 16) & 0xFF) as u8,
+            ((*colour >> 8) & 0xFF) as u8,
+            (*colour & 0xFF) as u8,
+        );
+        let mut touched = false;
+        for (name, v) in [("R", &mut r), ("G", &mut g), ("B", &mut b)] {
+            row(ui, name, |ui| {
+                if slider(ui, v, 0..=255, "").changed() {
+                    touched = true;
+                }
+            });
+        }
+        if touched {
+            *colour = ((r as u32) << 16) | ((g as u32) << 8) | b as u32;
+            changed = true;
+        }
+        row(ui, "Preview", |ui| {
+            let c = Color32::from_rgb(r, g, b);
+            ui.add_sized(vec2(TOUCH_H * 2.0, TOUCH_H), Button::new("").fill(c));
+            ui.label(RichText::new(format!("#{:06X}", *colour)).size(16.0));
+        });
+    }
+    changed
+}
