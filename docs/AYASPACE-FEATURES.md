@@ -79,21 +79,108 @@ controller. `master.*` is the built-in pad.
 | Back-key remap | UART bytes 9-12 — **not sent on the SLIDE** | InputPlumber (profile paddles) |
 | Trackpad mapping | `TouchpadCfg` | N/A — the SLIDE has no trackpads |
 
-## Not implemented here
+## Feature parity with AYASpace
 
-Checked against AYASpace running on the same unit, and deliberately left out or
-not yet investigated:
+Checked against AYASpace running on the same unit.
 
 | AYASpace feature | status |
 |---|---|
-| Charge policy 50-100%, regular/bypass charge | **implemented, and dead in hardware** — does nothing in AYASpace on this unit either. [CHARGING.md](CHARGING.md) |
-| Joystick ring *effects* (Default, Monochrome Breathe, RGB Breathe, Google Breathe, Radar, Ripple) | **missing** — this app sets ring colour and brightness only. The mode list is known; the transport is not. |
-| Desktop layout — map physical buttons to actions | **not planned** — InputPlumber profiles do this better, and remapping belongs there rather than in a second mapper fighting it |
-| Motion EX (tilt) | **missing, uninvestigated** — no known transport |
-| VRAM size | **missing** — a UEFI setting AYASpace pokes; nothing here touches firmware variables |
 | Vibration low/medium/high/off | covered — Controller → Feel → Rumble |
-| Gyro enable/disable | covered — Controller → Gyro (levels, with off) |
-| Keyboard gradient | covered — and its colour is ignored by the firmware, so the picker is disabled in that mode |
+| Gyro enable/disable | covered — Controller → Gyro (levels, with off); AYASpace has no gyro UI here at all |
+| Keyboard gradient | covered — its colour is ignored by the firmware, so the picker is disabled in that mode |
+| Desktop layout — map physical buttons | **covered** — Input → Buttons, see below |
+| Joystick ring effects | **partly** — Breathe and Rainbow; Radar and Ripple are not reachable, see below |
+| Charge policy, regular/bypass charge | **implemented, dead in hardware** — does nothing in AYASpace on this unit either. [CHARGING.md](CHARGING.md) |
+| Motion EX | **not portable** — see below |
+| VRAM size | **not safely reachable** — see below |
+
+### The extra buttons were never dead
+
+LC and RC appear to do nothing on Linux. They are in fact fully delivered: the
+`aya5` capability map converts the chords the keyboard MCU sends —
+
+```yaml
+  - name: LC   source: Ctrl+Meta+F15  →  gamepad button LeftTop
+  - name: RC   source: Ctrl+Meta+F16  →  gamepad button RightTop
+```
+
+— and the stock profile then maps those to **Elite paddles**. With an Xbox 360
+target selected, the emulated pad has no paddles, so the events are translated
+and then dropped. Nothing logs this.
+
+Input → Buttons rebinds them, or from a script:
+
+```
+$ ayaneo-tray --map
+  buttons: LeftTop (LC), RightTop (RC), QuickAccess (Custom)
+  actions: none, esc, app, osk, guide, paddle
+$ ayaneo-tray --map RightTop esc
+```
+
+Two traps worth knowing. Bindings are edits to the *running* profile, so loading
+a profile discards them — they are saved and re-applied, like the pointer
+settings. And `SetTargetDevices` replaces the entire target set, so the `dbus`
+target has to be passed every time or the UI actions (`app`, `osk`) have nowhere
+to land.
+
+`app` maps a button to InputPlumber's `ui_quick` DBus action, which the tray
+listens for — that is how the window opens with no pointer attached.
+
+### Ring effects are host-side animations, not EC ones
+
+`rgb.set_mode` stores a mode and wakes a worker thread, which switches on it:
+
+```c
+switch(*(undefined4 *)(*param_1 + 4)) {
+  case 0: FUN_14034afa0(...); FUN_14034aee0(uVar5, 10000);
+  case 1: FUN_14034a6d0(...);
+  case 2: FUN_14034a980(uVar5, uVar4);
+  ...
+}
+```
+
+A different animation function per mode, computing colours on the host and
+pushing them to the EC in a loop. The EC only displays what it was last told,
+which is why the driver "holds" the LEDs (`0xd187 = 0xa5`, `AYANEO_LED_MC_MODE_HOLD`).
+
+So effects are ours to write, and Breathe and Rainbow are — in the tray process,
+so they outlive the settings window. The limit is the driver's interface:
+
+```
+$ cat /sys/class/leds/ayaneo:rgb:joystick_rings/multi_index
+red green blue
+```
+
+One triple for both rings, with no way to address a quadrant. Radar, Ripple and
+Google Breathe are positional, so they cannot be done through this interface at
+all — only by driving the per-quadrant EC registers (`0xb3`–`0xbe` and the
+mirrored bank) behind the driver's back.
+
+### Motion EX does not exist to port
+
+Its handler answers `driver_not_installed` / `service_not_running`: it needs
+AYASpace's own kernel driver and service to inject motion into the emulated
+controller. It is not a hardware setting, so there is nothing to reimplement —
+the Linux equivalent is mapping the gyro in InputPlumber, which already has it
+as a source (`iio_device0`).
+
+### VRAM size is a Windows driver's WMI class
+
+AYASpace writes a PowerShell script and runs it:
+
+```
+( Get-WmiObject UMAInterface -Namespace "root/wmi" ).SetUMASize($HexAdd)
+```
+
+That class is not exposed by this firmware. There is no `_WDG` in the DSDT or in
+any of the twenty SSDTs, and `/sys/bus/wmi/devices/` is empty — so it is provided
+by a Windows driver, not by ACPI-WMI, and there is nothing for Linux to call.
+
+The setting itself lives in a UEFI setup blob — `AMD_PBS_SETUP` and
+`AmdSetupPHX` are both present in `efivars` — so it could in principle be
+changed by writing undocumented offsets in a firmware variable. That is a
+bricking risk for no gain over the BIOS menu, which needs the same reboot.
+**Change it in BIOS setup.**
 
 Two things the SLIDE cannot use even though the API exists: record bytes 9-12
 are only transmitted in the AYANEO KUN's 15-byte frame, and `master.set_back_key`
