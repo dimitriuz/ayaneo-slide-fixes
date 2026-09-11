@@ -693,28 +693,31 @@ impl App {
 
         if self.helper_up {
             ui.add_space(12.0);
+            let half = ((ui.available_width() - 10.0) / 2.0).max(110.0);
+            let mut restart = false;
+            let mut stop = false;
             ui.horizontal(|ui| {
-                if ui
+                restart = ui
                     .add_sized(
-                        egui::vec2(ui.available_width() / 2.0 - 4.0, crate::widgets::TOUCH_H),
+                        egui::vec2(half, crate::widgets::TOUCH_H),
                         egui::Button::new("Restart service"),
                     )
-                    .clicked()
-                {
-                    self.submit(Job::Helper("service inputplumber restart".into()));
-                    self.status = "Restarting InputPlumber…".into();
-                }
-                if ui
+                    .clicked();
+                stop = ui
                     .add_sized(
-                        egui::vec2(ui.available_width(), crate::widgets::TOUCH_H),
+                        egui::vec2(half, crate::widgets::TOUCH_H),
                         egui::Button::new("Stop service"),
                     )
-                    .clicked()
-                {
-                    self.submit(Job::Helper("service inputplumber stop".into()));
-                    self.status = "Stopping InputPlumber…".into();
-                }
+                    .clicked();
             });
+            if restart {
+                self.submit(Job::Helper("service inputplumber restart".into()));
+                self.status = "Restarting InputPlumber…".into();
+            }
+            if stop {
+                self.submit(Job::Helper("service inputplumber stop".into()));
+                self.status = "Stopping InputPlumber…".into();
+            }
             hint(ui, &format!("InputPlumber {}", self.ip.version));
         }
     }
@@ -905,7 +908,33 @@ impl eframe::App for App {
             }
             ui.add_space(6.0);
             let sub = self.sub[idx];
-            egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| match tab {
+            // Always reserve the scrollbar. Letting it appear and disappear
+            // changes the content width between frames, so wrapped text is
+            // measured at one width and drawn at another - egui then
+            // underestimates the content height and the last lines cannot be
+            // scrolled to at all.
+            let mut area = egui::ScrollArea::vertical()
+                .auto_shrink([false; 2])
+                .scroll_bar_visibility(
+                    egui::scroll_area::ScrollBarVisibility::AlwaysVisible,
+                );
+            // Debug hook: jump to the end, so "is the bottom reachable" can be
+            // answered with a screenshot instead of an assumption.
+            if std::env::var("AYANEO_TRAY_SCROLL_BOTTOM").is_ok() {
+                area = area.stick_to_bottom(true);
+            }
+            let dbg = std::env::var("AYANEO_TRAY_SCROLL_BOTTOM").is_ok();
+            let avail_h = ui.available_height();
+            let out = area.show(ui, |ui| {
+                // Cap the content at the viewport width so one over-wide child
+                // cannot widen the panel and stop everything wrapping.
+                //
+                // Only max_width: set_width would also force a *minimum*, and
+                // the width available before the vertical scrollbar appears is
+                // wider than after it does - so forcing it re-created the
+                // overflow every frame and left the content height wrong.
+                ui.set_max_width(ui.available_width());
+                match tab {
                 Tab::Controller => self.controller_tab(ui, sub),
                 Tab::Lighting => self.lighting_tab(ui, sub),
                 Tab::Power => self.power_tab(ui, sub),
@@ -913,7 +942,22 @@ impl eframe::App for App {
                 Tab::Sensors => self.sensors_tab(ui),
                 Tab::Input => self.input_tab(ui),
                 Tab::About => self.about_tab(ui, sub),
+                }
+                // Trailing space. egui measures wrapped text slightly short, so
+                // without a margin the final line stays under the viewport edge
+                // even when the scroll offset is genuinely at its maximum.
+                ui.add_space(56.0);
             });
+            if dbg && self.last_poll.elapsed() > Duration::from_millis(900) {
+                eprintln!(
+                    "scroll: viewport_h={:.0} content_h={:.0} inner_h={:.0} offset={:.0} avail_h={:.0}",
+                    out.inner_rect.height(),
+                    out.content_size.y,
+                    out.inner_rect.height(),
+                    out.state.offset.y,
+                    avail_h
+                );
+            }
         });
 
         ctx.request_repaint_after(Duration::from_millis(250));
