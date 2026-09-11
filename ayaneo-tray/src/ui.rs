@@ -474,7 +474,7 @@ impl App {
                 }
                 let manual_now = self.fan_manual;
                 let mut pct = self.fan_pct;
-                let commit = row(ui, "Duty", |ui| {
+                let commit = row(ui, "Speed", |ui| {
                     let s = ui.add_enabled_ui(manual_now, |ui| slider(ui, &mut pct, 20..=100, " %")).inner;
                     s.drag_stopped() || s.lost_focus()
                 });
@@ -491,9 +491,14 @@ impl App {
                 }
                 hint(
                     ui,
+                    "Speed is the PWM duty cycle — the share of time the fan is driven, \
+                     which is what the hardware actually takes. It is what is commanded, \
+                     not what is measured: this machine has no tachometer.",
+                );
+                hint(
+                    ui,
                     "Above 85 °C the helper forces automatic control and latches until you \
-                     press Auto; the fan is handed back whenever the helper stops. This is \
-                     commanded duty — the machine has no tachometer.",
+                     press Auto, and the fan is handed back whenever the helper stops.",
                 );
             }
             _ => {
