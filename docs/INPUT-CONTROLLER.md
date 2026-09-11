@@ -621,6 +621,90 @@ value (battery, TDP, fan) was dead. AYASpace gates on the **EC**, which sits
 behind I/O ports `0x4E/0x4F` and cannot be virtualised. Real hardware - Windows
 To Go on external media - is the only route.
 
+## The pad disappears across suspend — the MCU sleeps and cannot wake itself
+
+### Symptom
+
+After a suspend/resume cycle the controller is dead and KDE announces that "ZhiXu
+Controller" disconnected. Pressing any button on the pad brings it back.
+
+```
+2026-09-11T12:16:11  kernel: PM: suspend entry (s2idle)
+2026-09-11T12:42:22  kernel: PM: suspend exit
+2026-09-11T12:42:22  kernel: usb 1-3: USB disconnect, device number 6
+2026-09-11T12:42:22  inputplumber: Failed running device evdev://event16:
+                     "Failed to fetch events: No such device"
+2026-09-11T12:42:22  hhd: Device 'Microsoft X-Box 360 pad' has error. Removing.
+```
+
+`ZhiXu` is the pad, not some peripheral: the built-in controller enumerates as
+`045e:028e` with `iManufacturer=ZhiXu`.
+
+### Cause
+
+The MCU powers itself down during the bus suspend and cannot signal its way back.
+
+Both of its interfaces go quiet, which is what distinguishes this from an ordinary USB
+resume failure — it is the whole MCU that is asleep, not just the USB side:
+
+```
+$ lsusb | grep 045e                     # nothing
+$ cat .../usb1-port3/state              # not attached
+$ sudo gulikit-ctl -v probe             # the UART is dead too
+  /dev/ttyS2     io 0x3e8  <no reply>
+  /dev/ttyS0     io 0x3f8  <no reply>
+  /dev/ttyS1     io 0x2f8  <no reply>
+  /dev/ttyS3     io 0x2e8  <no reply>
+```
+
+And its configuration descriptor says it can never ask the host to resume it:
+
+```
+$ sudo lsusb -v -d 045e:028e | grep bmAttributes
+    bmAttributes         0x80        <- bus-powered, bit 5 (remote wakeup) clear
+```
+
+Compare the keyboard MCU on the next port, which survives suspend intact:
+
+```
+/sys/bus/usb/devices/1-3 (Controller)    wakeup=          <- unsupported
+/sys/bus/usb/devices/1-5 (USB KeyBoard)  wakeup=enabled
+```
+
+So at resume the host tries to resume port 3, nothing answers, and the kernel logs a
+disconnect. The MCU stays down until its own firmware wakes it, which a button press
+does.
+
+### No software fix from the USB side
+
+Tried and does not work:
+
+* Power-cycling the port (`echo 1 > usb1-port3/disable; echo 0 > ...`). The port goes
+  back to `not attached` — the host cannot make a device present. It is the device that
+  pulls D+ up, and its PHY is off.
+* Talking to the MCU over the UART. It is asleep there too, so there is nothing to send
+  a wake command to.
+* `power/control` is already `on` for this device and `power/persist` is `1`, so runtime
+  autosuspend is not involved and reset-resume is already permitted.
+
+The only remaining avenue would be an EC line that resets or re-powers the MCU, which
+has not been looked for. Until then: **press any button on the pad after waking**.
+
+### What does recover on its own
+
+Everything above the pad reattaches correctly once it does come back, so no settings
+need re-applying by hand:
+
+```
+$ busctl get-property org.shadowblip.InputPlumber \
+    /org/shadowblip/InputPlumber/CompositeDevice0 \
+    org.shadowblip.Input.CompositeDevice ProfileName
+s "Default + RightStick Mouse"
+$ ... GetProfileYaml | grep -E "speed_pps|deadzone"
+    speed_pps: 770
+    deadzone: 0.2
+```
+
 ## Diagnostic methodology
 
 Reusable on any handheld, and where the real conclusions came from.
