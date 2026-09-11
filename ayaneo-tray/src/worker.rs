@@ -27,6 +27,11 @@ pub enum Job {
     ApplyRings(rings::Rings),
     Helper(String),
     PollHelper,
+    /// InputPlumber: poll state, or act on it.
+    PollIp,
+    IpProfile(std::path::PathBuf),
+    IpTarget(String),
+    IpManageAll(bool),
 }
 
 pub enum Msg {
@@ -38,6 +43,8 @@ pub enum Msg {
     HelperState(bool, String),
     /// Fresh device discovery.
     Devices(crate::hw::Devices),
+    /// Fresh InputPlumber state.
+    IpState(crate::inputplumber::Status),
 }
 
 fn key(job: &Job) -> &'static str {
@@ -48,6 +55,10 @@ fn key(job: &Job) -> &'static str {
         Job::ApplyRings(_) => "rings",
         Job::Helper(_) => "helper",
         Job::PollHelper => "poll",
+        Job::PollIp => "pollip",
+        Job::IpProfile(_) => "ipprofile",
+        Job::IpTarget(_) => "iptarget",
+        Job::IpManageAll(_) => "ipmanage",
     }
 }
 
@@ -133,6 +144,24 @@ fn run(
             Job::PollHelper => match helper::request("fan status") {
                 Ok(s) => Msg::HelperState(true, s),
                 Err(_) => Msg::HelperState(false, String::new()),
+            },
+            Job::PollIp => Msg::IpState(crate::inputplumber::status()),
+            Job::IpProfile(path) => match crate::inputplumber::load_profile(&path) {
+                Ok(()) => Msg::IpState(crate::inputplumber::status()),
+                Err(e) => Msg::Status(e),
+            },
+            Job::IpTarget(id) => match crate::inputplumber::set_target(&id) {
+                // The target is torn down and rebuilt, so let it settle before
+                // reading back what it became.
+                Ok(()) => {
+                    std::thread::sleep(std::time::Duration::from_millis(1200));
+                    Msg::IpState(crate::inputplumber::status())
+                }
+                Err(e) => Msg::Status(e),
+            },
+            Job::IpManageAll(on) => match crate::inputplumber::set_manage_all(on) {
+                Ok(()) => Msg::IpState(crate::inputplumber::status()),
+                Err(e) => Msg::Status(e),
             },
         };
         if tx.send(msg).is_err() {

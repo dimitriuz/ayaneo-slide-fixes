@@ -114,6 +114,21 @@ fn handle(stream: UnixStream) {
                     crate::fan::set_curve(pts).map(|_| format!("curve, {n} points"))
                 }
             }
+            // Only this one unit, and only these verbs: the helper must not
+            // become a general-purpose way to run systemctl as root.
+            ["service", "inputplumber", op @ ("start" | "stop" | "restart")] => {
+                match std::process::Command::new("systemctl")
+                    .args([op, "inputplumber"])
+                    .output()
+                {
+                    Ok(o) if o.status.success() => Ok(format!("inputplumber {op}")),
+                    Ok(o) => Err(anyhow::anyhow!(
+                        "systemctl {op} inputplumber: {}",
+                        String::from_utf8_lossy(&o.stderr).trim().to_string()
+                    )),
+                    Err(e) => Err(anyhow::anyhow!("systemctl: {e}")),
+                }
+            }
             ["fan", "status"] => crate::fan::status().map(|st| {
                 let (mode, target) = match &st.mode {
                     crate::fan::Mode::Auto => ("auto".to_string(), String::new()),

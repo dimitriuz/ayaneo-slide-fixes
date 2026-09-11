@@ -11,6 +11,7 @@ mod gamepad;
 mod helper;
 mod ipc;
 mod hw;
+mod inputplumber;
 mod kbdlight;
 mod power;
 mod rings;

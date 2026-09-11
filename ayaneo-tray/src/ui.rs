@@ -28,16 +28,18 @@ enum Tab {
     Power,
     Fan,
     Sensors,
+    Input,
     About,
 }
 
 impl Tab {
-    const ALL: [Tab; 6] = [
+    const ALL: [Tab; 7] = [
         Tab::Controller,
         Tab::Lighting,
         Tab::Power,
         Tab::Fan,
         Tab::Sensors,
+        Tab::Input,
         Tab::About,
     ];
 
@@ -48,11 +50,12 @@ impl Tab {
             Tab::Power => 2,
             Tab::Fan => 3,
             Tab::Sensors => 4,
-            Tab::About => 5,
+            Tab::Input => 5,
+            Tab::About => 6,
         }
     }
     fn label(self) -> &'static str {
-        ["Controller", "Lighting", "Power", "Fan", "Sensors", "About"][self.index()]
+        ["Controller", "Lighting", "Power", "Fan", "Sensors", "Input", "About"][self.index()]
     }
     /// Splitting each section into its own page is what keeps any one screen
     /// down to a few large controls, which is the whole point on a handheld.
@@ -62,7 +65,7 @@ impl Tab {
             Tab::Lighting => &["Keyboard", "Rings"],
             Tab::Power => &["Profile", "TDP"],
             // A single page needs no second row of navigation.
-            Tab::Fan | Tab::Sensors => &[],
+            Tab::Fan | Tab::Sensors | Tab::Input => &[],
             Tab::About => &["Info", "Display", "Devices"],
         }
     }
@@ -71,7 +74,7 @@ impl Tab {
 pub struct App {
     tab: Tab,
     /// Remembered per primary tab, so switching back returns where you were.
-    sub: [usize; 6],
+    sub: [usize; 7],
     settings: state::Settings,
     trusted: bool,
     devices: hw::Devices,
@@ -83,6 +86,9 @@ pub struct App {
     telemetry: telemetry::Telemetry,
     last_poll: Instant,
     profiles: Vec<String>,
+    ip: crate::inputplumber::Status,
+    ip_profiles: Vec<(String, std::path::PathBuf)>,
+    last_ip_poll: Instant,
     profile: Option<String>,
     helper_up: bool,
     /// 0 auto, 1 manual, 2 curve
@@ -110,17 +116,18 @@ impl App {
                 s if s.starts_with("power") => Tab::Power,
                 s if s.starts_with("fan") => Tab::Fan,
                 s if s.starts_with("sensors") => Tab::Sensors,
+                s if s.starts_with("input") => Tab::Input,
                 s if s.starts_with("about") => Tab::About,
                 _ => Tab::Controller,
             },
             sub: {
-                let mut v = [0usize; 6];
+                let mut v = [0usize; 7];
                 if let Some((_, n)) = std::env::var("AYANEO_TRAY_TAB")
                     .unwrap_or_default()
                     .split_once(':')
                 {
                     let n: usize = n.parse().unwrap_or(0);
-                    v = [n; 6];
+                    v = [n; 7];
                 }
                 v
             },
@@ -135,6 +142,9 @@ impl App {
             telemetry: telemetry::read(),
             last_poll: Instant::now(),
             profiles: power::available(),
+            ip: Default::default(),
+            ip_profiles: crate::inputplumber::profiles(),
+            last_ip_poll: Instant::now() - Duration::from_secs(60),
             profile: power::current(),
             helper_up: false,
             fan_mode: 0,
@@ -600,6 +610,106 @@ impl App {
             hint(ui, "Read-only, straight from hwmon and power_supply.");
     }
 
+    fn input_tab(&mut self, ui: &mut egui::Ui) {
+        if !self.ip.running {
+            unavailable(ui, "InputPlumber", &Some("not responding on the system bus".into()));
+            if self.helper_up && wide_button(ui, "Start InputPlumber").clicked() {
+                self.submit(Job::Helper("service inputplumber start".into()));
+                self.status = "Starting InputPlumber…".into();
+            }
+            if wide_button(ui, "Re-check").clicked() {
+                self.submit(Job::PollIp);
+            }
+            return;
+        }
+
+        row(ui, "Device", |ui| {
+            ui.label(egui::RichText::new(&self.ip.device).size(17.0));
+        });
+        row(ui, "Profile", |ui| {
+            ui.label(egui::RichText::new(&self.ip.profile).size(17.0));
+        });
+
+        ui.add_space(8.0);
+        ui.label(egui::RichText::new("Switch profile").strong());
+        let profiles = self.ip_profiles.clone();
+        let mut chosen: Option<std::path::PathBuf> = None;
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            for (label, path) in &profiles {
+                let selected = self.ip.profile == *label;
+                let mut b = egui::Button::new(egui::RichText::new(label).size(15.0))
+                    .min_size(egui::vec2(0.0, crate::widgets::TOUCH_H));
+                if selected {
+                    b = b.fill(ui.visuals().selection.bg_fill);
+                }
+                if ui.add(b).clicked() {
+                    chosen = Some(path.clone());
+                }
+            }
+        });
+        if let Some(p) = chosen {
+            self.submit(Job::IpProfile(p));
+            self.status = "Loading profile…".into();
+        }
+
+        ui.add_space(10.0);
+        ui.label(egui::RichText::new("Emulated controller").strong());
+        let cur = self.ip.target.clone().unwrap_or_default();
+        let opts: Vec<(&str, &str)> =
+            crate::inputplumber::TARGETS.iter().map(|(id, l)| (*id, *l)).collect();
+        let picked = segmented(ui, cur.as_str(), &opts);
+        if let Some(id) = picked {
+            self.submit(Job::IpTarget(id.to_string()));
+            self.status = format!("Switching to {id}…");
+        }
+        hint(
+            ui,
+            "What games actually see. The Steam Deck target speaks HID and has no \
+             /dev/input node, so titles outside Steam often cannot find it — switch to \
+             an Xbox target if a game does not detect the controller.",
+        );
+
+        ui.add_space(10.0);
+        let manage = self.ip.manage_all;
+        if let Some(v) = row(ui, "Manage all", |ui| toggle(ui, manage)) {
+            self.submit(Job::IpManageAll(v));
+            self.status = "Applying…".into();
+        }
+        hint(
+            ui,
+            "On, InputPlumber takes over every input device it recognises; off, only \
+             ones it has a config for.",
+        );
+
+        if self.helper_up {
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                if ui
+                    .add_sized(
+                        egui::vec2(ui.available_width() / 2.0 - 4.0, crate::widgets::TOUCH_H),
+                        egui::Button::new("Restart service"),
+                    )
+                    .clicked()
+                {
+                    self.submit(Job::Helper("service inputplumber restart".into()));
+                    self.status = "Restarting InputPlumber…".into();
+                }
+                if ui
+                    .add_sized(
+                        egui::vec2(ui.available_width(), crate::widgets::TOUCH_H),
+                        egui::Button::new("Stop service"),
+                    )
+                    .clicked()
+                {
+                    self.submit(Job::Helper("service inputplumber stop".into()));
+                    self.status = "Stopping InputPlumber…".into();
+                }
+            });
+            hint(ui, &format!("InputPlumber {}", self.ip.version));
+        }
+    }
+
     fn about_tab(&mut self, ui: &mut egui::Ui, sub: usize) {
         match sub {
             0 => {
@@ -683,6 +793,12 @@ impl eframe::App for App {
             self.last_poll = Instant::now();
             self.submit(Job::PollHelper);
         }
+        // InputPlumber state changes rarely and each read is several busctl
+        // calls, so poll it far less often than the sensors.
+        if self.tab == Tab::Input && self.last_ip_poll.elapsed() > Duration::from_secs(5) {
+            self.last_ip_poll = Instant::now();
+            self.submit(Job::PollIp);
+        }
         // Rediscover anything missing. Cheap when everything is present (the
         // probe is skipped entirely), and it is the only way a device that
         // enumerates after login ever shows up.
@@ -705,6 +821,7 @@ impl eframe::App for App {
                         self.status = "Controller found".into();
                     }
                 }
+                Msg::IpState(st) => self.ip = st,
                 Msg::HelperState(up, s) => {
                     self.helper_up = up;
                     if up {
@@ -785,6 +902,7 @@ impl eframe::App for App {
                 Tab::Power => self.power_tab(ui, sub),
                 Tab::Fan => self.fan_tab(ui),
                 Tab::Sensors => self.sensors_tab(ui),
+                Tab::Input => self.input_tab(ui),
                 Tab::About => self.about_tab(ui, sub),
             });
         });

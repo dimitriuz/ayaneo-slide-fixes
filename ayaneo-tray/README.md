@@ -9,7 +9,10 @@ Controller   deadzone, per-stick sensitivity, trigger and gyro levels,
              per-button turbo, rumble, ABXY swap, factory reset
 Lighting     keyboard backlight (colour, 3 effects, brightness, Fn light)
              joystick ring LEDs (colour, brightness)
-Power        ACPI platform profile, sustained TDP via ryzenadj, fan, sensors
+Power        ACPI platform profile, sustained TDP via ryzenadj
+Fan          automatic, fixed speed, or a draggable curve
+Sensors      temperatures, battery, draw
+Input        InputPlumber: profile, emulated controller, service control
 ```
 
 Protocols are documented in [`../docs/GAMEPAD-PROTOCOL.md`](../docs/GAMEPAD-PROTOCOL.md)
