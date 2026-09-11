@@ -9,6 +9,7 @@ mod ec;
 mod fan;
 mod gamepad;
 mod helper;
+mod ipc;
 mod hw;
 mod kbdlight;
 mod power;
@@ -166,10 +167,14 @@ fn restore() -> Result<()> {
 }
 
 fn run_gui(start_visible: bool) -> Result<()> {
+    // If a copy is already running, ask it to show itself and stop here.
+    if ipc::hand_off_to_running(start_visible) {
+        return Ok(());
+    }
     let (tx, rx) = std::sync::mpsc::channel();
     // The tray lives on its own thread and only ever sends messages, so the
     // GUI thread stays the single owner of all device state.
-    let service = ksni::TrayService::new(tray::Tray { tx });
+    let service = ksni::TrayService::new(tray::Tray { tx: tx.clone() });
     service.spawn();
 
     let opts = eframe::NativeOptions {
@@ -189,7 +194,11 @@ fn run_gui(start_visible: bool) -> Result<()> {
             let devices = hw::Devices::probe(&settings.record(), trusted);
             let mut app = ui::App::new(rx, start_visible, devices.clone());
             let ctx = cc.egui_ctx.clone();
-            app.attach_worker(worker::Worker::spawn(devices, move || ctx.request_repaint()));
+            app.attach_worker(worker::Worker::spawn(devices, {
+                let ctx = ctx.clone();
+                move || ctx.request_repaint()
+            }));
+            ipc::listen(tx, move || ctx.request_repaint());
             Ok(Box::new(app))
         }),
     )

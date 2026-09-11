@@ -18,6 +18,10 @@ use std::sync::{Arc, Condvar, Mutex};
 use crate::{gamepad, helper, kbdlight, rings, state::Settings};
 
 pub enum Job {
+    /// Re-run device discovery. Needed because hardware can appear late: on a
+    /// warm reboot this controller has been seen enumerating eight minutes in,
+    /// and a probe done once at startup would call it missing forever.
+    Reprobe(gamepad::Record, bool),
     ApplyPad(gamepad::Record),
     ApplyKbd(kbdlight::KbdLight),
     ApplyRings(rings::Rings),
@@ -32,10 +36,13 @@ pub enum Msg {
     HelperReply(Result<String, String>),
     /// Result of PollHelper: (helper_up, fan status line).
     HelperState(bool, String),
+    /// Fresh device discovery.
+    Devices(crate::hw::Devices),
 }
 
 fn key(job: &Job) -> &'static str {
     match job {
+        Job::Reprobe(..) => "probe",
         Job::ApplyPad(_) => "pad",
         Job::ApplyKbd(_) => "kbd",
         Job::ApplyRings(_) => "rings",
@@ -79,7 +86,7 @@ impl Worker {
 fn run(
     queue: Arc<(Mutex<Queue>, Condvar)>,
     tx: Sender<Msg>,
-    devices: crate::hw::Devices,
+    mut devices: crate::hw::Devices,
     repaint: impl Fn(),
 ) {
     loop {
@@ -95,6 +102,10 @@ fn run(
         let Some(job) = job else { continue };
 
         let msg = match job {
+            Job::Reprobe(rec, trusted) => {
+                devices = crate::hw::Devices::probe(&rec, trusted);
+                Msg::Devices(devices.clone())
+            }
             Job::ApplyPad(rec) => match &devices.gamepad {
                 Some(p) => match gamepad::send(p, &rec) {
                     Ok(_) => Msg::Status("Controller updated".into()),

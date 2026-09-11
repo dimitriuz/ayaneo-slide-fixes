@@ -246,11 +246,20 @@ pub fn find_port_readonly() -> Option<PathBuf> {
 
 /// Confirm by sending `rec`. Only safe when `rec` is known to match the
 /// hardware's current state, i.e. it came from the saved settings.
+///
+/// Retries per port for the same reason `send` does: the MCU drops roughly one
+/// reply in seven. A single-shot probe therefore reports a perfectly healthy
+/// controller as missing about 15% of the time.
 pub fn confirm_port(rec: &Record) -> Option<PathBuf> {
     if let Ok(p) = std::env::var("GULIKIT_PORT") {
         return Some(PathBuf::from(p));
     }
-    candidate_ports()
-        .into_iter()
-        .find(|p| transact_once(p, rec, Duration::from_millis(300)).is_ok())
+    candidate_ports().into_iter().find(|p| {
+        (0..5).any(|_| transact_once(p, rec, Duration::from_millis(300)).is_ok())
+    })
+}
+
+/// Whether a port can be opened at all, as opposed to answering.
+pub fn port_openable(p: &Path) -> bool {
+    open_port(p).is_ok()
 }

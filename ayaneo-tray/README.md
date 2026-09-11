@@ -85,12 +85,30 @@ libraries in total.
 
 ```bash
 ayaneo-tray              # tray applet, window hidden until the icon is clicked
-ayaneo-tray --window     # open the window immediately
+ayaneo-tray --window     # open the window (or raise the running instance)
 ayaneo-tray --status     # print device and settings state, write nothing
 ayaneo-tray --restore    # re-apply saved settings (used by the login unit)
 ```
 
-Closing the window hides it to the tray; Quit is in the tray menu.
+Click the tray icon to show or hide the window. Closing the window hides it to
+the tray — Quit, in the tray menu, is the only thing that actually exits.
+
+**Starting it.** After installing the units above:
+
+```bash
+systemctl --user enable --now ayaneo-tray     # autostart at login, tray only
+```
+
+It also appears in the application menu as **AYANEO**. Launching it again does
+not start a second copy: the first instance owns a socket in `$XDG_RUNTIME_DIR`
+and later launches hand their request over and exit, so the menu entry raises
+the existing window. That matters more than it sounds — two copies means two
+tray icons, two caches, and two things writing the same hardware.
+
+**Devices that appear late.** Discovery re-runs every ten seconds while
+anything is missing. On a warm reboot this controller has been observed
+enumerating on USB *eight minutes* after boot, and a probe done once at startup
+would have called it missing for the rest of the session.
 
 ## Desktop support
 

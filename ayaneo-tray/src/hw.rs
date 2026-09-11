@@ -34,15 +34,37 @@ impl Devices {
             Some(p) => d.gamepad = Some(p),
             None => {
                 let cands = gamepad::candidate_ports();
+                // Distinguish "cannot open" from "opened fine, nothing answered".
+                // The old message blamed udev whenever *any* candidate was
+                // unopenable - but the unpopulated 8250 slots never open, so it
+                // always blamed udev, including when the controller was simply
+                // absent.
+                let openable: Vec<_> =
+                    cands.iter().filter(|p| gamepad::port_openable(p)).collect();
                 d.gamepad_err = Some(if cands.is_empty() {
-                    "no legacy UART found (expected /dev/ttyS* at I/O 0x3e8)".into()
-                } else if cands.iter().any(|p| !writable(p)) {
+                    "no legacy UART found (expected /dev/ttyS* at I/O 0x3E8)".into()
+                } else if openable.is_empty() {
                     format!(
-                        "cannot open {} - needs the udev rule, or membership of its group",
-                        cands.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")
+                        "cannot open {} - install 70-ayaneo-tray.rules, then \
+                         `sudo udevadm control --reload && sudo udevadm trigger`",
+                        cands
+                            .iter()
+                            .map(|p| p.display().to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     )
                 } else {
-                    "no MCU answered on any UART".into()
+                    format!(
+                        "{} opens but the controller does not answer. It is usually \
+                         absent rather than misconfigured: check `lsusb` for 045e:028e, \
+                         and if it is missing, shut down fully (not reboot) and power on \
+                         again - a warm reboot does not reset the controller's power rail.",
+                        openable
+                            .iter()
+                            .map(|p| p.display().to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
                 });
             }
         }

@@ -46,6 +46,13 @@ pub struct App {
     fan_note: String,
     style_applied: bool,
     worker: Option<Worker>,
+    /// Set only by the tray's Quit item. Everything else that asks the window
+    /// to close is a hide.
+    quitting: bool,
+    last_reprobe: Instant,
+    /// Debug hook: self-close after N seconds, so close-to-tray can be tested
+    /// without a human clicking the titlebar.
+    selftest_close_at: Option<Instant>,
 }
 
 impl App {
@@ -72,6 +79,12 @@ impl App {
             fan_note: String::new(),
             style_applied: false,
             worker: None,
+            quitting: false,
+            last_reprobe: Instant::now(),
+            selftest_close_at: std::env::var("AYANEO_TRAY_SELFTEST_CLOSE")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .map(|secs| Instant::now() + Duration::from_secs(secs)),
         }
     }
 
@@ -518,17 +531,36 @@ impl eframe::App for App {
             match msg {
                 TrayMsg::Toggle => self.visible = !self.visible,
                 TrayMsg::Show => self.visible = true,
-                TrayMsg::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+                TrayMsg::Quit => {
+                    self.quitting = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
             }
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(self.visible));
-            if self.visible {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            if !self.quitting {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(self.visible));
+                if self.visible {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                }
             }
         }
-        if ctx.input(|i| i.viewport().close_requested()) && self.visible {
+
+        if let Some(at) = self.selftest_close_at {
+            if Instant::now() >= at {
+                self.selftest_close_at = None;
+                eprintln!("selftest: requesting close");
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        }
+
+        // Closing the window hides to tray. This is unconditional apart from an
+        // explicit Quit: gating it on `self.visible` meant that if that flag
+        // ever drifted out of step with the real window state, the close went
+        // through and took the tray icon with it.
+        if ctx.input(|i| i.viewport().close_requested()) && !self.quitting {
             self.visible = false;
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            eprintln!("close requested: hidden to tray");
         }
 
         // Telemetry is cheap sysfs reads; anything slower goes to the worker.
@@ -538,11 +570,28 @@ impl eframe::App for App {
             self.last_poll = Instant::now();
             self.submit(Job::PollHelper);
         }
+        // Rediscover anything missing. Cheap when everything is present (the
+        // probe is skipped entirely), and it is the only way a device that
+        // enumerates after login ever shows up.
+        let missing = self.devices.gamepad.is_none()
+            || self.devices.kbd.is_none()
+            || self.devices.rings.is_none();
+        if missing && self.last_reprobe.elapsed() > Duration::from_secs(10) {
+            self.last_reprobe = Instant::now();
+            self.submit(Job::Reprobe(self.settings.record(), self.trusted));
+        }
         while let Ok(m) = self.worker.as_ref().map_or(Err(std::sync::mpsc::TryRecvError::Empty), |w| w.rx.try_recv()) {
             match m {
                 Msg::Status(s) => self.status = s,
                 Msg::HelperReply(Ok(s)) => self.status = s,
                 Msg::HelperReply(Err(e)) => self.status = e,
+                Msg::Devices(d) => {
+                    let gained = d.gamepad.is_some() && self.devices.gamepad.is_none();
+                    self.devices = d;
+                    if gained {
+                        self.status = "Controller found".into();
+                    }
+                }
                 Msg::HelperState(up, s) => {
                     self.helper_up = up;
                     if up {
