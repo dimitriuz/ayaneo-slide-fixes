@@ -1,9 +1,8 @@
-//! Single instance, and "launching it again raises the window".
+//! Talking to a running window.
 //!
-//! A tray app that starts a second copy on every menu click is worse than
-//! useless: two tray icons, two sets of cached settings, and two things writing
-//! the same hardware. So the first instance owns a socket in the runtime dir,
-//! and later launches hand their request to it and exit.
+//! The tray lives in one process and the window in another - see main.rs for
+//! why. This is the channel between them, and it also gives single-instance
+//! behaviour: a second `--window` hands its request to the first and exits.
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -14,36 +13,44 @@ use crate::tray::TrayMsg;
 
 fn socket_path() -> PathBuf {
     let dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
-    PathBuf::from(dir).join("ayaneo-tray.sock")
+    PathBuf::from(dir).join("ayaneo-tray-gui.sock")
 }
 
-/// True if another instance took the request. The caller should exit.
-pub fn hand_off_to_running(show: bool) -> bool {
-    let p = socket_path();
-    match UnixStream::connect(&p) {
-        Ok(mut s) => {
-            let _ = s.write_all(if show { b"show\n" } else { b"ping\n" });
-            true
-        }
-        Err(_) => {
-            // Nothing listening. A socket file left by a crashed instance would
-            // make bind() fail, so clear it.
-            let _ = std::fs::remove_file(&p);
-            false
-        }
-    }
+/// Send a command to a running window. Err means there is no window.
+pub fn send_to_gui(cmd: &str) -> std::io::Result<()> {
+    let mut s = UnixStream::connect(socket_path())?;
+    s.write_all(format!("{cmd}\n").as_bytes())
 }
 
-/// Own the socket and forward requests from later launches to the UI.
+pub fn gui_running() -> bool {
+    send_to_gui("ping").is_ok()
+}
+
+/// Own the socket for the lifetime of the window.
 pub fn listen(tx: Sender<TrayMsg>, repaint: impl Fn() + Send + 'static) {
     let p = socket_path();
+    // A socket file left by a crashed window would make bind() fail, and it is
+    // safe to clear because connect() above just told us nothing is listening.
+    if UnixStream::connect(&p).is_err() {
+        let _ = std::fs::remove_file(&p);
+    }
     let Ok(listener) = UnixListener::bind(&p) else { return };
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
             let mut line = String::new();
-            if BufReader::new(stream).read_line(&mut line).is_ok() && line.trim() == "show" {
-                let _ = tx.send(TrayMsg::Show);
-                repaint();
+            if BufReader::new(stream).read_line(&mut line).is_err() {
+                continue;
+            }
+            match line.trim() {
+                "show" => {
+                    let _ = tx.send(TrayMsg::Show);
+                    repaint();
+                }
+                "quit" => {
+                    let _ = tx.send(TrayMsg::Quit);
+                    repaint();
+                }
+                _ => {}
             }
         }
     });

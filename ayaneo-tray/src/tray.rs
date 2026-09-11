@@ -1,20 +1,31 @@
-//! StatusNotifierItem tray icon.
+//! The tray icon, and the process that owns it.
 //!
-//! ksni talks D-Bus directly, so this works on KDE, and on GNOME with the
-//! AppIndicator extension, without linking any widget toolkit.
+//! This is deliberately a separate process from the window. egui's
+//! `ViewportCommand::Visible(false)` is a no-op on Wayland - verified against
+//! KWin, which kept reporting `hidden=false visible=true` after the app
+//! believed it had hidden itself - and hiding a toplevel is not really a
+//! Wayland operation at all. Keeping the tray in a process that has no window
+//! sidesteps that entirely: closing the window closes a process, and the tray
+//! is untouched because it was never part of it.
 
-use std::sync::mpsc::Sender;
+use std::process::Command;
 
-/// What the tray asks the GUI thread to do.
+/// What the window is asked to do, over the IPC socket.
 pub enum TrayMsg {
-    Toggle,
     Show,
     Quit,
 }
 
-pub struct Tray {
-    pub tx: Sender<TrayMsg>,
+/// Raise the running window, or start one.
+fn open_window() {
+    if crate::ipc::send_to_gui("show").is_ok() {
+        return;
+    }
+    let exe = std::env::current_exe().unwrap_or_else(|_| "ayaneo-tray".into());
+    let _ = Command::new(exe).arg("--window").spawn();
 }
+
+pub struct Tray;
 
 impl ksni::Tray for Tray {
     fn id(&self) -> String {
@@ -23,23 +34,22 @@ impl ksni::Tray for Tray {
     fn title(&self) -> String {
         "AYANEO".into()
     }
-    /// A themed name first; icon_pixmap below is the fallback when a theme has
-    /// no such icon, which keeps the tray usable with no asset files at all.
     fn icon_name(&self) -> String {
         "input-gaming".into()
     }
+    /// Drawn rather than shipped, so the tray works with no icon theme and no
+    /// asset files.
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
         const N: i32 = 22;
         let mut data = Vec::with_capacity((N * N * 4) as usize);
         for y in 0..N {
             for x in 0..N {
-                // a filled rounded square, so the icon reads at tray size
                 let (dx, dy) = ((x - N / 2) as f32, (y - N / 2) as f32);
-                let inside = dx.abs() < 8.0 && dy.abs() < 6.0;
+                let body = dx.abs() < 8.0 && dy.abs() < 6.0;
                 let stick = (dx * dx + dy * dy).sqrt() < 2.5;
                 let (a, v) = if stick {
                     (255u8, 40u8)
-                } else if inside {
+                } else if body {
                     (255, 220)
                 } else {
                     (0, 0)
@@ -50,28 +60,43 @@ impl ksni::Tray for Tray {
         vec![ksni::Icon { width: N, height: N, data }]
     }
     fn activate(&mut self, _x: i32, _y: i32) {
-        let _ = self.tx.send(TrayMsg::Toggle);
+        open_window();
     }
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
         use ksni::menu::*;
         vec![
             StandardItem {
                 label: "Open".into(),
-                activate: Box::new(|t: &mut Tray| {
-                    let _ = t.tx.send(TrayMsg::Show);
-                }),
+                activate: Box::new(|_: &mut Tray| open_window()),
                 ..Default::default()
             }
             .into(),
             MenuItem::Separator,
             StandardItem {
                 label: "Quit".into(),
-                activate: Box::new(|t: &mut Tray| {
-                    let _ = t.tx.send(TrayMsg::Quit);
+                activate: Box::new(|_: &mut Tray| {
+                    // Take the window with us, then stop.
+                    let _ = crate::ipc::send_to_gui("quit");
+                    std::thread::spawn(|| {
+                        std::thread::sleep(std::time::Duration::from_millis(250));
+                        std::process::exit(0);
+                    });
                 }),
                 ..Default::default()
             }
             .into(),
         ]
+    }
+}
+
+/// The tray process: an icon and nothing else.
+pub fn run_daemon(open_now: bool) -> anyhow::Result<()> {
+    let service = ksni::TrayService::new(Tray);
+    service.spawn();
+    if open_now {
+        open_window();
+    }
+    loop {
+        std::thread::park();
     }
 }

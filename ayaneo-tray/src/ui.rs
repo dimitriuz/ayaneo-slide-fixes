@@ -31,7 +31,6 @@ pub struct App {
     trusted: bool,
     devices: hw::Devices,
     rx: Receiver<TrayMsg>,
-    visible: bool,
     dirty_pad: Option<Instant>,
     dirty_kbd: Option<Instant>,
     dirty_rings: Option<Instant>,
@@ -46,9 +45,6 @@ pub struct App {
     fan_note: String,
     style_applied: bool,
     worker: Option<Worker>,
-    /// Set only by the tray's Quit item. Everything else that asks the window
-    /// to close is a hide.
-    quitting: bool,
     last_reprobe: Instant,
     /// Debug hook: self-close after N seconds, so close-to-tray can be tested
     /// without a human clicking the titlebar.
@@ -56,7 +52,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(rx: Receiver<TrayMsg>, start_visible: bool, devices: hw::Devices) -> Self {
+    pub fn new(rx: Receiver<TrayMsg>, devices: hw::Devices) -> Self {
         let (settings, trusted) = state::load();
         Self {
             tab: Tab::Controller,
@@ -64,7 +60,6 @@ impl App {
             trusted,
             devices,
             rx,
-            visible: start_visible,
             dirty_pad: None,
             dirty_kbd: None,
             dirty_rings: None,
@@ -79,7 +74,6 @@ impl App {
             fan_note: String::new(),
             style_applied: false,
             worker: None,
-            quitting: false,
             last_reprobe: Instant::now(),
             selftest_close_at: std::env::var("AYANEO_TRAY_SELFTEST_CLOSE")
                 .ok()
@@ -527,20 +521,14 @@ impl eframe::App for App {
         if !self.style_applied {
             self.apply_style(ctx);
         }
+        // Requests from the tray process, over the IPC socket.
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
-                TrayMsg::Toggle => self.visible = !self.visible,
-                TrayMsg::Show => self.visible = true,
-                TrayMsg::Quit => {
-                    self.quitting = true;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                }
-            }
-            if !self.quitting {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(self.visible));
-                if self.visible {
+                TrayMsg::Show => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                 }
+                TrayMsg::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             }
         }
 
@@ -550,17 +538,6 @@ impl eframe::App for App {
                 eprintln!("selftest: requesting close");
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
-        }
-
-        // Closing the window hides to tray. This is unconditional apart from an
-        // explicit Quit: gating it on `self.visible` meant that if that flag
-        // ever drifted out of step with the real window state, the close went
-        // through and took the tray icon with it.
-        if ctx.input(|i| i.viewport().close_requested()) && !self.quitting {
-            self.visible = false;
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-            eprintln!("close requested: hidden to tray");
         }
 
         // Telemetry is cheap sysfs reads; anything slower goes to the worker.

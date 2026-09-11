@@ -26,8 +26,9 @@ use anyhow::Result;
 const USAGE: &str = "\
 ayaneo-tray - AYANEO handheld control
 
-    ayaneo-tray              run the tray applet (default)
-    ayaneo-tray --window     same, but open the window immediately
+    ayaneo-tray              run the tray icon (default; the window is a
+                             separate process, started when you click it)
+    ayaneo-tray --window     open the settings window
     ayaneo-tray --status     print device and settings state, change nothing
     ayaneo-tray --restore    re-apply saved settings and exit (for a login unit)
     ayaneo-tray --helper     run the privileged helper (systemd service)
@@ -166,23 +167,20 @@ fn restore() -> Result<()> {
     Ok(())
 }
 
-fn run_gui(start_visible: bool) -> Result<()> {
-    // If a copy is already running, ask it to show itself and stop here.
-    if ipc::hand_off_to_running(start_visible) {
+fn run_gui() -> Result<()> {
+    // One window at a time: hand off to a running one rather than opening a
+    // second copy that would fight it over the same hardware.
+    if ipc::send_to_gui("show").is_ok() {
         return Ok(());
     }
     let (tx, rx) = std::sync::mpsc::channel();
-    // The tray lives on its own thread and only ever sends messages, so the
-    // GUI thread stays the single owner of all device state.
-    let service = ksni::TrayService::new(tray::Tray { tx: tx.clone() });
-    service.spawn();
 
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([620.0, 780.0])
             .with_min_inner_size([460.0, 480.0])
             .with_title("AYANEO")
-            .with_visible(start_visible),
+            .with_visible(true),
         ..Default::default()
     };
     eframe::run_native(
@@ -192,7 +190,7 @@ fn run_gui(start_visible: bool) -> Result<()> {
             // Probe once here rather than per-frame: it walks every serial port.
             let (settings, trusted) = state::load();
             let devices = hw::Devices::probe(&settings.record(), trusted);
-            let mut app = ui::App::new(rx, start_visible, devices.clone());
+            let mut app = ui::App::new(rx, devices.clone());
             let ctx = cc.egui_ctx.clone();
             app.attach_worker(worker::Worker::spawn(devices, {
                 let ctx = ctx.clone();
@@ -208,8 +206,8 @@ fn run_gui(start_visible: bool) -> Result<()> {
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
-        None => run_gui(false),
-        Some("--window") => run_gui(true),
+        None => tray::run_daemon(false),
+        Some("--window") => run_gui(),
         Some("--status") => {
             print_status();
             Ok(())

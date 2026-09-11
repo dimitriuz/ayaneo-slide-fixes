@@ -90,8 +90,16 @@ ayaneo-tray --status     # print device and settings state, write nothing
 ayaneo-tray --restore    # re-apply saved settings (used by the login unit)
 ```
 
-Click the tray icon to show or hide the window. Closing the window hides it to
-the tray — Quit, in the tray menu, is the only thing that actually exits.
+Click the tray icon to open the window; close the window to dismiss it. Quit,
+in the tray menu, stops the tray itself.
+
+**The tray and the window are separate processes**, and that is deliberate.
+egui's `ViewportCommand::Visible(false)` is a no-op on Wayland — KWin kept
+reporting `hidden=false visible=true` after the app believed it had hidden
+itself, so the close button appeared to do nothing at all. Hiding a toplevel
+is not really a Wayland operation. With the tray in a process that has no
+window, closing the window closes a process and the tray is untouched, because
+it was never part of it.
 
 **Starting it.** After installing the units above:
 
