@@ -377,3 +377,41 @@ starting near 48 px/s instead of 160.
 The same event-driven behaviour is why a stationary stick produces no pointer
 motion at all, however far it is deflected. Do not conclude a deadzone is too
 high from a stick you are not currently moving.
+
+## Why the pointer ignores the desktop's mouse settings on a Deck target
+
+A stick driving the cursor behaves differently depending on which controller
+InputPlumber is emulating, and the reason is not in InputPlumber at all:
+
+```
+/dev/hidraw3: steam                          <- Steam holds the emulated Deck controller
+InputPlumber Mouse (event15): kwin_wayland   <- the compositor holds InputPlumber's mouse
+```
+
+With the **Steam Deck** target, Steam recognises a Deck controller, claims it,
+and drives the pointer itself through its own Desktop Layout. That injection
+does not pass through libinput, so the desktop's pointer speed and acceleration
+have no effect, and the sensitivity that matters is Steam's own — in Steam's
+controller settings, not here.
+
+With an **Xbox** target, Steam does not treat it as a Deck, so the cursor comes
+from InputPlumber's own `InputPlumber Mouse` uinput device. The compositor
+consumes that as an ordinary pointer, so desktop settings apply again — and so
+does InputPlumber's `speed_pps`.
+
+`speed_pps` can be changed live, without root and without editing any file:
+
+```bash
+# read it
+busctl --system call org.shadowblip.InputPlumber \
+    /org/shadowblip/InputPlumber/CompositeDevice0 \
+    org.shadowblip.Input.CompositeDevice GetProfileYaml
+# ... edit speed_pps in that YAML, then hand it back
+busctl --system call org.shadowblip.InputPlumber \
+    /org/shadowblip/InputPlumber/CompositeDevice0 \
+    org.shadowblip.Input.CompositeDevice LoadProfileFromYaml s "<yaml>"
+```
+
+That edits the running profile, not the file, so loading a profile again resets
+it. `ayaneo-tray`'s Input tab exposes this as a slider and re-applies the value
+after a profile switch.

@@ -32,6 +32,15 @@ pub const TARGETS: [(&str, &str); 6] = [
     ("unified-gamepad", "Unified"),
 ];
 
+/// Pointer speed in pixels per second, from the loaded profile.
+///
+/// This is InputPlumber's own mouse, which the compositor sees as an ordinary
+/// pointer - so it is the knob that matters when a stick drives the cursor
+/// through InputPlumber. It is *not* what moves the cursor when the emulated
+/// target is a Steam Deck: Steam claims that controller and drives the pointer
+/// itself, bypassing both this and the desktop's own pointer settings.
+pub const SPEED_RANGE: (u32, u32) = (100, 2000);
+
 #[derive(Default, Clone)]
 pub struct Status {
     pub running: bool,
@@ -41,6 +50,8 @@ pub struct Status {
     /// The target id currently in use, if it is one we offer.
     pub target: Option<String>,
     pub manage_all: bool,
+    /// None when the loaded profile has no stick-to-mouse mapping.
+    pub mouse_speed: Option<u32>,
 }
 
 fn busctl(args: &[&str]) -> Option<String> {
@@ -82,7 +93,62 @@ pub fn status() -> Status {
             }
         }
     }
+    st.mouse_speed = profile_yaml().as_deref().and_then(parse_speed);
     st
+}
+
+/// busctl prints strings escaped and quoted; recover the original.
+fn unescape(s: &str) -> String {
+    let inner = match (s.find('"'), s.rfind('"')) {
+        (Some(a), Some(b)) if b > a => &s[a + 1..b],
+        _ => return String::new(),
+    };
+    let mut out = String::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some('r') => out.push('\r'),
+            Some(other) => out.push(other),
+            None => {}
+        }
+    }
+    out
+}
+
+pub fn profile_yaml() -> Option<String> {
+    busctl(&["--system", "call", SERVICE, COMPOSITE, COMPOSITE_IF, "GetProfileYaml"])
+        .map(|s| unescape(&s))
+        .filter(|s| !s.is_empty())
+}
+
+fn parse_speed(yaml: &str) -> Option<u32> {
+    let i = yaml.find("speed_pps:")?;
+    yaml[i + 10..].trim_start().split_whitespace().next()?.parse().ok()
+}
+
+/// Rewrite speed_pps in the live profile and reload it.
+///
+/// This edits the running profile rather than the file on disk, so it needs no
+/// privilege - and equally does not survive the profile being loaded again.
+pub fn set_mouse_speed(pps: u32) -> Result<(), String> {
+    let yaml = profile_yaml().ok_or("could not read the current profile")?;
+    let i = yaml.find("speed_pps:").ok_or("this profile has no mouse mapping")?;
+    let rest = &yaml[i + 10..];
+    let digits: String = rest.trim_start().chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        return Err("could not parse speed_pps".into());
+    }
+    let lead = rest.len() - rest.trim_start().len();
+    let new = format!("{}speed_pps: {}{}", &yaml[..i], pps, &rest[lead + digits.len()..]);
+    busctl(&["--system", "call", SERVICE, COMPOSITE, COMPOSITE_IF, "LoadProfileFromYaml", "s", &new])
+        .map(|_| ())
+        .ok_or_else(|| "InputPlumber rejected the profile".to_string())
 }
 
 /// Profiles from both the packaged and the local directory, local last so a

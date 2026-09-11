@@ -29,7 +29,9 @@ pub enum Job {
     PollHelper,
     /// InputPlumber: poll state, or act on it.
     PollIp,
-    IpProfile(std::path::PathBuf),
+    /// Load a profile, then re-apply the saved pointer speed it resets.
+    IpProfile(std::path::PathBuf, Option<u32>),
+    IpMouseSpeed(u32),
     IpTarget(String),
     IpManageAll(bool),
 }
@@ -56,7 +58,8 @@ fn key(job: &Job) -> &'static str {
         Job::Helper(_) => "helper",
         Job::PollHelper => "poll",
         Job::PollIp => "pollip",
-        Job::IpProfile(_) => "ipprofile",
+        Job::IpProfile(..) => "ipprofile",
+        Job::IpMouseSpeed(_) => "ipspeed",
         Job::IpTarget(_) => "iptarget",
         Job::IpManageAll(_) => "ipmanage",
     }
@@ -146,7 +149,18 @@ fn run(
                 Err(_) => Msg::HelperState(false, String::new()),
             },
             Job::PollIp => Msg::IpState(crate::inputplumber::status()),
-            Job::IpProfile(path) => match crate::inputplumber::load_profile(&path) {
+            Job::IpProfile(path, speed) => match crate::inputplumber::load_profile(&path) {
+                Ok(()) => {
+                    // Loading a profile replaces speed_pps with whatever the
+                    // file says, so put the chosen value back.
+                    if let Some(pps) = speed {
+                        let _ = crate::inputplumber::set_mouse_speed(pps);
+                    }
+                    Msg::IpState(crate::inputplumber::status())
+                }
+                Err(e) => Msg::Status(e),
+            },
+            Job::IpMouseSpeed(pps) => match crate::inputplumber::set_mouse_speed(pps) {
                 Ok(()) => Msg::IpState(crate::inputplumber::status()),
                 Err(e) => Msg::Status(e),
             },

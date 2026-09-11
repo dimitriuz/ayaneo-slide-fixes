@@ -655,8 +655,43 @@ impl App {
             }
         });
         if let Some(p) = chosen {
-            self.submit(Job::IpProfile(p));
+            self.submit(Job::IpProfile(p, self.settings.ip_mouse_speed));
             self.status = "Loading profile…".into();
+        }
+
+        if let Some(cur) = self.ip.mouse_speed {
+            ui.add_space(10.0);
+            ui.label(egui::RichText::new("Pointer speed").strong());
+            let mut pps = self.settings.ip_mouse_speed.unwrap_or(cur);
+            let commit = row(ui, "Speed", |ui| {
+                let r = ui.add(
+                    egui::Slider::new(
+                        &mut pps,
+                        crate::inputplumber::SPEED_RANGE.0..=crate::inputplumber::SPEED_RANGE.1,
+                    )
+                    .suffix(" px/s"),
+                );
+                r.drag_stopped() || r.lost_focus()
+            });
+            if commit && Some(pps) != self.settings.ip_mouse_speed {
+                self.settings.ip_mouse_speed = Some(pps);
+                let _ = state::save(&self.settings);
+                self.submit(Job::IpMouseSpeed(pps));
+                self.status = format!("Pointer speed {pps} px/s…");
+            }
+            hint(
+                ui,
+                "How fast the stick moves the cursor through InputPlumber. This does \
+                 nothing while the emulated controller is a Steam Deck: Steam claims \
+                 that controller and drives the pointer itself, which is also why the \
+                 desktop's own mouse settings stop applying. Switch to an Xbox target \
+                 to get both this and the desktop settings back.",
+            );
+            hint(
+                ui,
+                "Applied to the running profile, so loading a profile from elsewhere \
+                 resets it — this tab re-applies it automatically.",
+            );
         }
 
         ui.add_space(10.0);
