@@ -79,6 +79,22 @@ controller. `master.*` is the built-in pad.
 | Back-key remap | UART bytes 9-12 — **not sent on the SLIDE** | InputPlumber (profile paddles) |
 | Trackpad mapping | `TouchpadCfg` | N/A — the SLIDE has no trackpads |
 
+## Not implemented here
+
+Checked against AYASpace running on the same unit, and deliberately left out or
+not yet investigated:
+
+| AYASpace feature | status |
+|---|---|
+| Charge policy 50-100%, regular/bypass charge | **implemented, and dead in hardware** — does nothing in AYASpace on this unit either. [CHARGING.md](CHARGING.md) |
+| Joystick ring *effects* (Default, Monochrome Breathe, RGB Breathe, Google Breathe, Radar, Ripple) | **missing** — this app sets ring colour and brightness only. The mode list is known; the transport is not. |
+| Desktop layout — map physical buttons to actions | **not planned** — InputPlumber profiles do this better, and remapping belongs there rather than in a second mapper fighting it |
+| Motion EX (tilt) | **missing, uninvestigated** — no known transport |
+| VRAM size | **missing** — a UEFI setting AYASpace pokes; nothing here touches firmware variables |
+| Vibration low/medium/high/off | covered — Controller → Feel → Rumble |
+| Gyro enable/disable | covered — Controller → Gyro (levels, with off) |
+| Keyboard gradient | covered — and its colour is ignored by the firmware, so the picker is disabled in that mode |
+
 Two things the SLIDE cannot use even though the API exists: record bytes 9-12
 are only transmitted in the AYANEO KUN's 15-byte frame, and `master.set_back_key`
 writes into them. And `touchpad.*` targets hardware this model does not have.

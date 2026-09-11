@@ -1,6 +1,12 @@
 # Charge control on the AYANEO SLIDE
 
-> **Verdict for the AYANEO SLIDE (AS01, EC `0x001b0100`): neither works.** The
+> **Verdict for the AYANEO SLIDE (AS01, EC `0x001b0100`): neither works — and
+> not only on Linux.** Both the charge policy (50-100%) and the regular/bypass
+> switch were tried in AYASpace on Windows on this same unit, and neither had
+> any effect there either. That is the vendor's own software driving its own
+> hardware, so this is a property of the machine, not of any reimplementation.
+>
+> **Verdict:**  The
 > kernel exposes bypass, the write reaches the EC, and the battery charges
 > straight through it. The rest of this document is how that was established and
 > why there is no better register to try.

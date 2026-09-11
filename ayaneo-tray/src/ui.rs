@@ -386,18 +386,27 @@ impl App {
                     ch = true;
                 }
             });
-            let mut open = self.kbd_custom;
-            ui.label(egui::RichText::new("Colour").strong());
-            if colour_editor(ui, &mut k.color, &kbdlight::PRESETS, &mut open) {
-                ch = true;
-            }
-            self.kbd_custom = open;
             row(ui, "Effect", |ui| {
                 if let Some(v) = segmented(ui, k.mode, &kbdlight::MODES) {
                     k.mode = v;
                     ch = true;
                 }
             });
+            // Gradient cycles hues of its own accord and never reads the colour
+            // field. AYASpace hides its colour picker in this mode; say so
+            // rather than offer a control that does nothing.
+            let gradient = k.mode == 2;
+            let mut open = self.kbd_custom;
+            ui.label(egui::RichText::new("Colour").strong());
+            ui.add_enabled_ui(!gradient, |ui| {
+                if colour_editor(ui, &mut k.color, &kbdlight::PRESETS, &mut open) {
+                    ch = true;
+                }
+            });
+            self.kbd_custom = open;
+            if gradient {
+                hint(ui, "Gradient cycles through its own colours and ignores this.");
+            }
             row(ui, "Brightness", |ui| {
                 if slider(ui, &mut k.brightness, 0..=100, " %").changed() {
                     ch = true;
