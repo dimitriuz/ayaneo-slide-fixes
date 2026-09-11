@@ -235,6 +235,9 @@ fn run_gui() -> Result<()> {
         return Ok(());
     }
     let (tx, rx) = std::sync::mpsc::channel();
+    // Whichever of the two processes is running drives the ring effect; the
+    // lock inside decides which, so this is safe to call from both.
+    rings::run_effects();
 
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

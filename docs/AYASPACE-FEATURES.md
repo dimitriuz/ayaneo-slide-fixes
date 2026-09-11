@@ -126,6 +126,13 @@ to land.
 `app` maps a button to InputPlumber's `ui_quick` DBus action, which the tray
 listens for — that is how the window opens with no pointer attached.
 
+`paddle` is an Xbox Elite back paddle: the extra buttons that pad has and a
+standard controller does not, which games can bind separately from the face
+buttons. Which paddle depends on the button — LC becomes `LeftPaddle1`, RC
+`RightPaddle1` — and **it only exists on the Xbox Elite target**. On any other
+target the press is dropped, which is the same trap that made these buttons look
+dead in the first place.
+
 ### Ring effects are host-side animations, not EC ones
 
 `rgb.set_mode` stores a mode and wakes a worker thread, which switches on it:
@@ -143,8 +150,13 @@ A different animation function per mode, computing colours on the host and
 pushing them to the EC in a loop. The EC only displays what it was last told,
 which is why the driver "holds" the LEDs (`0xd187 = 0xa5`, `AYANEO_LED_MC_MODE_HOLD`).
 
-So effects are ours to write, and Breathe and Rainbow are — in the tray process,
-so they outlive the settings window. The limit is the driver's interface:
+So effects are ours to write, and Breathe and Rainbow are. Both the tray and the
+window run the animator, since either can be the only one alive — the window
+opens without the tray, and the tray outlives the window. Exactly one may drive
+the LEDs or they fight and the rings stutter, so ownership is an `flock` the
+kernel releases when its holder exits, and the survivor takes over by itself.
+(The first version animated only in the tray, which meant quitting the tray
+silently froze the effect.) The limit is the driver's interface:
 
 ```
 $ cat /sys/class/leds/ayaneo:rgb:joystick_rings/multi_index

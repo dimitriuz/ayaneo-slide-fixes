@@ -127,19 +127,46 @@ pub fn max_brightness(dir: &Path) -> u32 {
         .unwrap_or(255)
 }
 
-/// Drive the ring effect for as long as this process lives.
+/// Take the animator lock, or fail if another process already holds it.
 ///
-/// Runs in the tray rather than the window, because an effect that stops when
-/// you close the settings window is not an effect. It re-reads the saved
-/// settings once a second instead of being told about changes: the window is a
-/// separate process, and a second IPC channel to carry one struct is not worth
-/// it when the file is already the thing both sides agree on.
+/// Both the tray and the window call `run_effects`, because either can be the
+/// only one running: the window can be opened without the tray, and the tray
+/// outlives the window. Exactly one of them must drive the LEDs or they fight
+/// and the rings stutter, so ownership is decided by an flock that the kernel
+/// drops when the holder exits - which also means the survivor takes over on
+/// its own, within one retry.
+fn claim() -> Option<std::fs::File> {
+    use std::os::unix::io::AsRawFd;
+    let dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
+    let f = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(PathBuf::from(dir).join("ayaneo-tray-rings.lock"))
+        .ok()?;
+    // SAFETY: a valid fd this function owns, and LOCK_NB so it cannot block.
+    let held = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0;
+    held.then_some(f)
+}
+
+/// Drive the ring effect for as long as this process holds the animator lock.
+///
+/// Re-reads the saved settings once a second instead of being told about
+/// changes: the window is a separate process, and a second IPC channel to carry
+/// one struct is not worth it when the file is already the thing both sides
+/// agree on.
 ///
 /// A static colour is written only when it changes. Without that this would
 /// rewrite the same two sysfs files twenty times a second forever, for nothing.
 pub fn run_effects() {
     std::thread::spawn(|| {
         let Some(dir) = find_device() else { return };
+        let _lock = loop {
+            if let Some(f) = claim() {
+                break f;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(3));
+        };
         let mut last_load = std::time::Instant::now();
         let (mut settings, _) = crate::state::load();
         let start = std::time::Instant::now();

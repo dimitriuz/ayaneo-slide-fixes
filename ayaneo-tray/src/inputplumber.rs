@@ -281,12 +281,22 @@ pub const ACTIONS: [Action; 6] = [
         label: "Steam",
         yaml: "  - gamepad:\n      button: Guide",
     },
-    Action {
-        id: "paddle",
-        label: "Paddle",
-        yaml: "  - gamepad:\n      button: LeftPaddle1",
-    },
+    // The paddle a button becomes depends on which button it is, so the
+    // capability is filled in per source rather than baked in here.
+    Action { id: "paddle", label: "Paddle", yaml: "  - gamepad:\n      button: {paddle}" },
 ];
+
+/// Which Elite paddle a given button should become.
+///
+/// The left-hand buttons go to the left paddles and the right-hand ones to the
+/// right, which is the only arrangement that is not surprising to hold.
+fn paddle_for(source: &str) -> &'static str {
+    match source {
+        "RightTop" => "RightPaddle1",
+        "QuickAccess" => "LeftPaddle2",
+        _ => "LeftPaddle1",
+    }
+}
 
 pub fn action(id: &str) -> Option<&'static Action> {
     ACTIONS.iter().find(|a| a.id == id)
@@ -342,7 +352,10 @@ pub fn button_actions() -> std::collections::HashMap<String, String> {
         let Some(i) = entry.find("target_events:") else { continue };
         let body = entry[i + "target_events:".len()..].trim_end();
         let body = body.trim_start_matches('\n');
-        if let Some(a) = ACTIONS.iter().find(|a| !a.yaml.is_empty() && body.trim_end() == a.yaml) {
+        let found = ACTIONS.iter().find(|a| {
+            !a.yaml.is_empty() && body.trim_end() == a.yaml.replace("{paddle}", paddle_for(&src))
+        });
+        if let Some(a) = found {
             out.insert(src, a.id.to_string());
         }
     }
@@ -373,7 +386,7 @@ pub fn set_button_action(source: &str, action_id: &str) -> Result<(), String> {
     if !act.yaml.is_empty() {
         out.push_str(&format!(
             "- name: {source}\n  source_event:\n    gamepad:\n      button: {source}\n  target_events:\n{}\n",
-            act.yaml
+            act.yaml.replace("{paddle}", paddle_for(source))
         ));
     }
 

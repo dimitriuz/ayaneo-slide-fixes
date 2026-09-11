@@ -1035,6 +1035,14 @@ impl App {
              DBus rather than pressed as keys; this app answers the first one. \
              Applied to the running profile and re-applied when one is loaded.",
         );
+        hint(
+            ui,
+            "\"Paddle\" is an Xbox Elite back paddle — the extra buttons that pad has \
+             and a standard controller does not, so games can bind them separately \
+             from the face buttons. It needs the Xbox Elite target: on any other \
+             one the paddle does not exist and the press is dropped, which is \
+             exactly why these buttons appeared dead.",
+        );
     }
 
     /// Name whatever else on the system drives this setting.
