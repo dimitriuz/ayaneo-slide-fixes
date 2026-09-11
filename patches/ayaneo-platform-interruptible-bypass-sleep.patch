@@ -1,0 +1,20 @@
+--- ayaneo-platform.c.orig	2026-09-11 19:06:15.011308255 +0200
++++ ayaneo-platform.c	2026-09-11 19:06:15.012376367 +0200
+@@ -1089,7 +1089,16 @@
+                 }
+                 last_charge_behaviour = ps_priv.charge_behaviour;
+             }
+-            msleep(AYANEO_BYPASS_WRITER_DELAY_MS);
++            /* Sleep in short steps, so kthread_stop() is noticed at once.
++             * msleep() does not return early for it, and the suspend handler
++             * stops this thread synchronously - which made every suspend wait
++             * out the remainder of this delay with the display still on. */
++            {
++                unsigned long end = jiffies +
++                        msecs_to_jiffies(AYANEO_BYPASS_WRITER_DELAY_MS);
++                while (!kthread_should_stop() && time_before(jiffies, end))
++                        msleep(100);
++            }
+         }
+ 
+         pr_info("Bypass-Writer thread stopped.\n");

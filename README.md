@@ -38,6 +38,7 @@ cd ayaneo-slide-fixes
 #   amdgpu.dcdebugmask=0x40000
 ```
 
+Suspend problems: **[docs/SUSPEND.md](docs/SUSPEND.md)** ·
 Full walkthrough: **[docs/BUILD.md](docs/BUILD.md)** ·
 Why it broke: **[docs/ROOT-CAUSE.md](docs/ROOT-CAUSE.md)** ·
 Parameters: **[docs/KERNEL-PARAMS.md](docs/KERNEL-PARAMS.md)**
