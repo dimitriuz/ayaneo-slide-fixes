@@ -945,9 +945,26 @@ impl App {
             Some(ec) if ec != inhibit => {
                 hint(ui, "Asked for — the EC applies it within 30 seconds.");
             }
-            Some(true) => hint(ui, "In force: the EC is bypassing the battery."),
+            Some(true) => hint(ui, "In force: the EC has been told to bypass."),
             Some(false) => hint(ui, "In force: the EC is charging normally."),
             None => {}
+        }
+
+        // Being told and obeying are different things, and on this hardware
+        // they came apart: measured rather than assumed, so the page cannot
+        // claim a limit it is not holding.
+        if self.chg.honoured == Some(false) {
+            warn(
+                ui,
+                "This EC ignores it — the battery kept charging with bypass in force, \
+                 so the limit above will not hold.",
+            );
+            hint(
+                ui,
+                "Not a wrong register: the write reaches EC 0xd1d1, and AYASpace's own \
+                 charge setting takes that same path on this board. The controller \
+                 simply does not act on it. See docs/CHARGING.md.",
+            );
         }
     }
 

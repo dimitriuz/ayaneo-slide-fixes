@@ -106,8 +106,13 @@ fn charge_status() -> String {
         Some(false) => "off",
         None => "?",
     };
+    let honoured = match crate::charge::honoured() {
+        crate::charge::Honoured::Yes => "yes",
+        crate::charge::Honoured::No => "no",
+        crate::charge::Honoured::Unknown => "?",
+    };
     format!(
-        "behaviour={} limit={} capacity={} status={} ec_bypass={ec}",
+        "behaviour={} limit={} capacity={} status={} ec_bypass={ec} honoured={honoured}",
         crate::charge::behaviour().unwrap_or_else(|| "-".into()),
         crate::charge::limit(),
         crate::charge::capacity().map_or("-".into(), |c| c.to_string()),

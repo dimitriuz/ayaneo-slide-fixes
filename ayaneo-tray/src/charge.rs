@@ -93,6 +93,13 @@ pub fn status() -> Option<String> {
     read_trim(battery()?.join("status"))
 }
 
+/// Charge in microwatt-hours. A thousand times finer than `capacity`, which is
+/// what makes "is it still taking charge?" answerable in a couple of minutes
+/// rather than a couple of percent.
+pub fn energy_uwh() -> Option<u64> {
+    read_trim(battery()?.join("energy_now"))?.parse().ok()
+}
+
 /// What the EC is actually doing, as opposed to what sysfs was told.
 ///
 /// `None` when the register holds neither documented value, which would mean
@@ -111,6 +118,76 @@ pub fn ec_bypass() -> Option<bool> {
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::OnceLock;
 use std::time::Duration;
+
+/// Whether inhibiting charge actually does anything on this machine.
+///
+/// It does not on every AYANEO: on an AS01 (SLIDE) with EC 0x001b0100 the write
+/// reaches EC `0xd1d1` - confirmed by reading the register back - and the
+/// battery carries on charging at full rate through both documented values,
+/// written while plugged in. AYASpace's own `system.set_charge_config` takes
+/// that identical path for this board, so there is no better register to use;
+/// the EC simply ignores it. Rather than show a limit that silently does
+/// nothing, measure it and say so.
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+pub enum Honoured {
+    /// Not yet observed under the conditions needed to tell.
+    Unknown,
+    /// Charge stopped while inhibit was in force.
+    Yes,
+    /// Charge continued while inhibit was in force.
+    No,
+}
+
+static HONOURED: AtomicU32 = AtomicU32::new(0);
+
+pub fn honoured() -> Honoured {
+    match HONOURED.load(Ordering::SeqCst) {
+        1 => Honoured::Yes,
+        2 => Honoured::No,
+        _ => Honoured::Unknown,
+    }
+}
+
+/// Long enough that a slow charger still moves the needle, short enough to have
+/// an answer before the battery has gained a percent.
+const VERIFY_SECS: u64 = 120;
+/// Charge gained over that window that counts as "still charging". The gauge
+/// steps in ~485 mWh increments on this pack, so anything above one step is
+/// real movement rather than quantisation.
+const VERIFY_UWH: u64 = 300_000;
+
+/// Watch whether an in-force inhibit actually stops the charge.
+///
+/// Only judges while the request has reached the EC register - sysfs alone lags
+/// it by up to 30 seconds, and judging during that window would blame the
+/// hardware for the driver's writer thread.
+fn verify(state: &mut Option<(std::time::Instant, u64)>) {
+    let inhibiting = behaviour().as_deref() == Some("inhibit-charge")
+        && ec_bypass() == Some(true)
+        && status().as_deref() == Some("Charging");
+    if !inhibiting {
+        *state = None;
+        return;
+    }
+    let Some(now) = energy_uwh() else { return };
+    match state {
+        None => *state = Some((std::time::Instant::now(), now)),
+        Some((since, start)) => {
+            if since.elapsed().as_secs() < VERIFY_SECS {
+                return;
+            }
+            let verdict = if now.saturating_sub(*start) > VERIFY_UWH { 2 } else { 1 };
+            if HONOURED.swap(verdict, Ordering::SeqCst) != verdict {
+                eprintln!(
+                    "charge: inhibit-charge is {} by this EC (+{} mWh over {VERIFY_SECS}s)",
+                    if verdict == 2 { "ignored" } else { "honoured" },
+                    (now.saturating_sub(*start)) / 1000,
+                );
+            }
+            *state = None;
+        }
+    }
+}
 
 /// 0 means no limit. Lives in an atomic rather than behind the helper's socket
 /// state so the supervisor thread can read it without contending for a lock it
@@ -187,11 +264,15 @@ pub fn start_monitor() {
         LIMIT.store(saved, Ordering::SeqCst);
         eprintln!("charge: limit {saved}% restored");
     }
-    std::thread::spawn(|| loop {
-        if let Some(set) = apply_once() {
-            eprintln!("charge: {set} at {:?}%", capacity());
+    std::thread::spawn(|| {
+        let mut window = None;
+        loop {
+            if let Some(set) = apply_once() {
+                eprintln!("charge: {set} at {:?}%", capacity());
+            }
+            verify(&mut window);
+            std::thread::sleep(Duration::from_secs(20));
         }
-        std::thread::sleep(Duration::from_secs(20));
     });
 }
 
@@ -208,6 +289,8 @@ pub struct Status {
     pub status: String,
     /// What the EC register says, which lags sysfs by up to 30 seconds.
     pub ec_bypass: Option<bool>,
+    /// Whether an in-force inhibit was observed to actually stop the charge.
+    pub honoured: Option<bool>,
 }
 
 impl Status {
@@ -233,6 +316,13 @@ pub fn parse(line: &str) -> Status {
                 s.ec_bypass = match v {
                     "on" => Some(true),
                     "off" => Some(false),
+                    _ => None,
+                }
+            }
+            "honoured" => {
+                s.honoured = match v {
+                    "yes" => Some(true),
+                    "no" => Some(false),
                     _ => None,
                 }
             }
