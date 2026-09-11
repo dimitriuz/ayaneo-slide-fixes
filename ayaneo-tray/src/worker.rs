@@ -41,6 +41,8 @@ pub enum Job {
     IpProfile(std::path::PathBuf, Option<u32>),
     IpMouseSpeed(u32),
     IpMouseDeadzone(u32),
+    /// Bind one handheld button to one action.
+    IpButton(String, String),
     IpTarget(String),
     IpManageAll(bool),
 }
@@ -87,6 +89,7 @@ fn key(job: &Job) -> &'static str {
         Job::IpProfile(..) => "ipprofile",
         Job::IpMouseSpeed(_) => "ipspeed",
         Job::IpMouseDeadzone(_) => "ipdz",
+        Job::IpButton(..) => "ipbutton",
         Job::IpTarget(_) => "iptarget",
         Job::IpManageAll(_) => "ipmanage",
     }
@@ -195,6 +198,12 @@ fn run(
             } else {
                 format!("charge limit {pct}")
             })),
+            Job::IpButton(src, act) => {
+                match crate::inputplumber::set_button_action(&src, &act) {
+                    Ok(()) => Msg::Status(format!("{src} → {act}")),
+                    Err(e) => Msg::Status(e),
+                }
+            }
             Job::PollIp => Msg::IpState(crate::inputplumber::status()),
             Job::IpProfile(path, speed) => match crate::inputplumber::load_profile(&path) {
                 Ok(()) => {
@@ -202,6 +211,10 @@ fn run(
                     // file says, so put the chosen value back.
                     if let Some(pps) = speed {
                         let _ = crate::inputplumber::set_mouse_speed(pps);
+                    }
+                    // Same for the button bindings, which are live-only edits.
+                    for (src, act) in crate::state::load().0.button_map {
+                        let _ = crate::inputplumber::set_button_action(&src, &act);
                     }
                     Msg::IpState(crate::inputplumber::status())
                 }

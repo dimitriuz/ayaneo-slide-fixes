@@ -232,10 +232,12 @@ pub fn load_profile(path: &std::path::Path) -> Result<(), String> {
 
 pub fn set_target(id: &str) -> Result<(), String> {
     // Keyboard and mouse targets are kept: dropping them would take the
-    // stick-as-mouse mapping with them.
+    // stick-as-mouse mapping with them. So is dbus, which is what carries a
+    // button mapped to a UI action - SetTargetDevices replaces the whole set,
+    // so anything not named here is silently detached.
     busctl(&[
-        "--system", "call", SERVICE, COMPOSITE, COMPOSITE_IF, "SetTargetDevices", "as", "3", id,
-        "keyboard", "mouse",
+        "--system", "call", SERVICE, COMPOSITE, COMPOSITE_IF, "SetTargetDevices", "as", "4", id,
+        "keyboard", "mouse", "dbus",
     ])
     .map(|_| ())
     .ok_or_else(|| format!("could not switch to {id}"))
@@ -248,4 +250,134 @@ pub fn set_manage_all(on: bool) -> Result<(), String> {
     ])
     .map(|_| ())
     .ok_or_else(|| "could not set ManageAllDevices".to_string())
+}
+
+// ------------------------------------------------------------ button mapping
+
+/// The handheld buttons worth offering, as the capability map names them.
+///
+/// These are what AYANEO's extra buttons become: the `aya5` capability map
+/// turns the Ctrl+Meta+F15/F16 chords the keyboard MCU sends into `LeftTop` and
+/// `RightTop`. Guide is deliberately absent - Steam expects it, and remapping it
+/// breaks more than it fixes.
+pub const SOURCES: [(&str, &str); 3] =
+    [("LeftTop", "LC"), ("RightTop", "RC"), ("QuickAccess", "Custom")];
+
+/// What a button can be made to do, as the YAML fragment it becomes.
+pub struct Action {
+    pub id: &'static str,
+    pub label: &'static str,
+    /// Body of `target_events:`, or empty to leave the button unmapped.
+    pub yaml: &'static str,
+}
+
+pub const ACTIONS: [Action; 6] = [
+    Action { id: "none", label: "Nothing", yaml: "" },
+    Action { id: "esc", label: "Escape", yaml: "  - keyboard: KeyEsc" },
+    Action { id: "app", label: "Open AYANEO", yaml: "  - dbus: ui_quick" },
+    Action { id: "osk", label: "On-screen KB", yaml: "  - dbus: ui_osk" },
+    Action {
+        id: "guide",
+        label: "Steam",
+        yaml: "  - gamepad:\n      button: Guide",
+    },
+    Action {
+        id: "paddle",
+        label: "Paddle",
+        yaml: "  - gamepad:\n      button: LeftPaddle1",
+    },
+];
+
+pub fn action(id: &str) -> Option<&'static Action> {
+    ACTIONS.iter().find(|a| a.id == id)
+}
+
+/// Split a profile into its top-level `- name:` mapping entries.
+///
+/// Returns (header, entries, trailer-less). InputPlumber serialises these at
+/// column zero with a fixed two-space body, so a line starting exactly with
+/// "- name:" is a reliable entry boundary - and staying line-based avoids
+/// pulling in a YAML parser for one edit.
+fn split_entries(yaml: &str) -> (String, Vec<String>) {
+    let mut header = String::new();
+    let mut entries: Vec<String> = Vec::new();
+    for line in yaml.lines() {
+        if line.starts_with("- name:") {
+            entries.push(String::new());
+        }
+        match entries.last_mut() {
+            Some(e) => {
+                e.push_str(line);
+                e.push('\n');
+            }
+            None => {
+                header.push_str(line);
+                header.push('\n');
+            }
+        }
+    }
+    (header, entries)
+}
+
+/// The source button an entry reacts to, if it is a plain gamepad button.
+fn entry_source(entry: &str) -> Option<String> {
+    let src = entry.find("source_event:")?;
+    let end = entry.find("target_events:").unwrap_or(entry.len());
+    entry[src..end]
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("button: ").map(|b| b.trim().to_string()))
+}
+
+/// Which action each offered button currently performs, read from the live
+/// profile. Buttons with no entry, or one this app cannot express, are absent.
+pub fn button_actions() -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    let Some(yaml) = profile_yaml() else { return out };
+    let (_, entries) = split_entries(&yaml);
+    for entry in entries {
+        let Some(src) = entry_source(&entry) else { continue };
+        if !SOURCES.iter().any(|(id, _)| *id == src) {
+            continue;
+        }
+        let Some(i) = entry.find("target_events:") else { continue };
+        let body = entry[i + "target_events:".len()..].trim_end();
+        let body = body.trim_start_matches('\n');
+        if let Some(a) = ACTIONS.iter().find(|a| !a.yaml.is_empty() && body.trim_end() == a.yaml) {
+            out.insert(src, a.id.to_string());
+        }
+    }
+    out
+}
+
+/// Point one button at one action, in the running profile.
+///
+/// Rewrites rather than patches: the whole entry for that button is dropped and
+/// rebuilt, so switching between a keyboard action and a gamepad one - which
+/// have different shapes - needs no special case.
+///
+/// Edits the live profile, like the pointer settings do, so it needs no
+/// privilege and equally does not survive a profile being loaded again. The
+/// caller re-applies it.
+pub fn set_button_action(source: &str, action_id: &str) -> Result<(), String> {
+    let act = action(action_id).ok_or_else(|| format!("unknown action {action_id}"))?;
+    let yaml = profile_yaml().ok_or("could not read the current profile")?;
+    let (header, entries) = split_entries(&yaml);
+
+    let mut out = header;
+    for entry in &entries {
+        if entry_source(entry).as_deref() == Some(source) {
+            continue; // replaced below
+        }
+        out.push_str(entry);
+    }
+    if !act.yaml.is_empty() {
+        out.push_str(&format!(
+            "- name: {source}\n  source_event:\n    gamepad:\n      button: {source}\n  target_events:\n{}\n",
+            act.yaml
+        ));
+    }
+
+    busctl(&["--system", "call", SERVICE, COMPOSITE, COMPOSITE_IF, "LoadProfileFromYaml", "s", &out])
+        .map(|_| ())
+        .ok_or_else(|| "InputPlumber rejected the profile".to_string())
 }

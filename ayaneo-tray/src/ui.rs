@@ -66,7 +66,7 @@ impl Tab {
             Tab::Lighting => &["Keyboard", "Rings"],
             Tab::Power => &["Profile", "TDP", "Charge"],
             // A single page needs no second row of navigation.
-            Tab::Input => &["Profile", "Pointer", "Target", "Service"],
+            Tab::Input => &["Profile", "Buttons", "Pointer", "Target", "Service"],
             Tab::Fan | Tab::Sensors => &[],
             Tab::About => &["Info", "Display", "Devices"],
         }
@@ -102,6 +102,8 @@ pub struct App {
     last_tdp_poll: Instant,
     chg: crate::charge::Status,
     last_chg_poll: Instant,
+    /// Button bindings as the live profile currently has them.
+    button_map: std::collections::HashMap<String, String>,
     profile: Option<String>,
     helper_up: bool,
     /// 0 auto, 1 manual, 2 curve
@@ -121,6 +123,7 @@ pub struct App {
 impl App {
     pub fn new(rx: Receiver<TrayMsg>, devices: hw::Devices) -> Self {
         let (settings, trusted) = state::load();
+        let button_map = settings.button_map.clone();
         Self {
             // Debug hook, same spirit as the close selftest: open straight onto a
             // page so it can be checked without someone clicking through.
@@ -164,6 +167,7 @@ impl App {
             last_tdp_poll: Instant::now() - Duration::from_secs(60),
             chg: crate::charge::Status::default(),
             last_chg_poll: Instant::now() - Duration::from_secs(60),
+            button_map: button_map,
             profile: power::current(),
             helper_up: false,
             fan_mode: 0,
@@ -434,18 +438,37 @@ impl App {
             }
             let mut r = self.settings.rings;
             let mut ch = false;
+            row(ui, "Effect", |ui| {
+                if let Some(v) = segmented(ui, r.effect, &rings::EFFECTS) {
+                    r.effect = v;
+                    ch = true;
+                }
+            });
             let mut open = self.rings_custom;
             ui.label(egui::RichText::new("Colour").strong());
-            if colour_editor(ui, &mut r.color, &rings::PRESETS, &mut open) {
-                ch = true;
-            }
+            // Rainbow sweeps the whole spectrum and never reads the colour.
+            let fixed_hue = r.effect == rings::Effect::Rainbow;
+            ui.add_enabled_ui(!fixed_hue, |ui| {
+                if colour_editor(ui, &mut r.color, &rings::PRESETS, &mut open) {
+                    ch = true;
+                }
+            });
             self.rings_custom = open;
+            if fixed_hue {
+                hint(ui, "Rainbow cycles the spectrum and ignores this.");
+            }
             row(ui, "Brightness", |ui| {
                 if slider(ui, &mut r.brightness, 0..=255, "").changed() {
                     ch = true;
                 }
             });
             hint(ui, "Zero is off. Ring colour is restored at login.");
+            hint(
+                ui,
+                "Effects are animated by the tray, so they keep running with this \
+                 window closed. Radar and Ripple are not offered: the driver exposes \
+                 one colour for both rings, with no way to address a quadrant.",
+            );
             if ch {
                 self.settings.rings = r;
                 self.dirty_rings = Some(Instant::now());
@@ -735,7 +758,8 @@ impl App {
                     self.status = "Loading profile…".into();
                 }
             }
-            1 => {
+            1 => self.buttons_page(ui),
+            2 => {
                 let Some(cur) = self.ip.mouse_speed else {
                     hint(
                         ui,
@@ -798,7 +822,7 @@ impl App {
                      them — this tab re-applies them automatically.",
                 );
             }
-            2 => {
+            3 => {
                 let cur = self.ip.target.clone().unwrap_or_default();
                 let opts: Vec<(&str, &str)> =
                     crate::inputplumber::TARGETS.iter().map(|(id, l)| (*id, *l)).collect();
@@ -975,6 +999,42 @@ impl App {
                  simply does not act on it. See docs/CHARGING.md.",
             );
         }
+    }
+
+    /// Bind the handheld's extra buttons.
+    ///
+    /// These are the buttons that do nothing out of the box, and the reason is
+    /// worth stating on the page: the stock profile sends them to Elite
+    /// paddles, which most emulated targets cannot express, so they are
+    /// translated and then dropped.
+    fn buttons_page(&mut self, ui: &mut egui::Ui) {
+        let opts: Vec<(&str, &str)> =
+            crate::inputplumber::ACTIONS.iter().map(|a| (a.id, a.label)).collect();
+        let mut chosen: Option<(String, String)> = None;
+        for (id, label) in crate::inputplumber::SOURCES {
+            let cur = self.button_map.get(id).cloned().unwrap_or_else(|| "none".into());
+            if let Some(pick) = row(ui, label, |ui| segmented(ui, cur.as_str(), &opts)) {
+                chosen = Some((id.to_string(), pick.to_string()));
+            }
+        }
+        if let Some((src, act)) = chosen {
+            self.button_map.insert(src.clone(), act.clone());
+            self.settings.button_map = self.button_map.clone();
+            let _ = state::save(&self.settings);
+            self.submit(Job::IpButton(src, act));
+            self.status = "Remapping…".into();
+        }
+        hint(
+            ui,
+            "LC and RC do nothing as shipped because the profile sends them to \
+             Elite paddles, which an Xbox 360 target has no way to express.",
+        );
+        hint(
+            ui,
+            "\"Open AYANEO\" and \"On-screen KB\" are handed to the desktop over \
+             DBus rather than pressed as keys; this app answers the first one. \
+             Applied to the running profile and re-applied when one is loaded.",
+        );
     }
 
     /// Name whatever else on the system drives this setting.

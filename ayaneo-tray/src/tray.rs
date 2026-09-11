@@ -93,6 +93,11 @@ impl ksni::Tray for Tray {
 pub fn run_daemon(open_now: bool) -> anyhow::Result<()> {
     let service = ksni::TrayService::new(Tray);
     service.spawn();
+    // A handheld button mapped to the DBus action opens the window too, which
+    // is the only way to reach it without a pointer.
+    crate::hotkey::watch(open_window);
+    // Ring effects have to outlive the settings window, so they run here.
+    crate::rings::run_effects();
     if open_now {
         open_window();
     }

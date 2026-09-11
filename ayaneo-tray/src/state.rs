@@ -12,6 +12,10 @@ use crate::{gamepad, kbdlight, rings};
 
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct Settings {
+    /// Handheld button bindings: capability name -> action id. Re-applied on
+    /// top of any profile that gets loaded, since those edits are live-only.
+    #[serde(default)]
+    pub button_map: std::collections::HashMap<String, String>,
     /// The 15-byte gamepad record, hex-encoded for legibility.
     pub gamepad_record: String,
     pub kbdlight: kbdlight::KbdLight,
@@ -52,6 +56,7 @@ fn default_scale() -> f32 {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            button_map: Default::default(),
             gamepad_record: hex(&gamepad::FACTORY),
             kbdlight: Default::default(),
             rings: Default::default(),

@@ -11,6 +11,7 @@ mod ec;
 mod fan;
 mod gamepad;
 mod helper;
+mod hotkey;
 mod ipc;
 mod hw;
 mod inputplumber;
@@ -34,6 +35,7 @@ ayaneo-tray - AYANEO handheld control
     ayaneo-tray --window     open the settings window
     ayaneo-tray --status     print device and settings state, change nothing
     ayaneo-tray --restore    re-apply saved settings and exit (for a login unit)
+    ayaneo-tray --map B A    bind handheld button B to action A (no args: list them)
     ayaneo-tray --helper     run the privileged helper (systemd service)
     ayaneo-tray --fan-auto   hand the fan back to the EC and exit (failsafe)
     ayaneo-tray --help
@@ -272,6 +274,38 @@ fn main() -> Result<()> {
             Ok(())
         }
         Some("--restore") => restore(),
+        // Scriptable equivalent of the Buttons page, and the way to check the
+        // mapping without a screen.
+        Some("--map") => match (args.get(1), args.get(2)) {
+            (Some(button), Some(action)) => {
+                inputplumber::set_button_action(button, action).map_err(anyhow::Error::msg)?;
+                let mut s = state::load().0;
+                s.button_map.insert(button.clone(), action.clone());
+                state::save(&s)?;
+                println!("{button} -> {action}");
+                Ok(())
+            }
+            _ => {
+                println!("usage: ayaneo-tray --map <button> <action>");
+                println!(
+                    "  buttons: {}",
+                    inputplumber::SOURCES
+                        .iter()
+                        .map(|(id, l)| format!("{id} ({l})"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                println!(
+                    "  actions: {}",
+                    inputplumber::ACTIONS
+                        .iter()
+                        .map(|a| a.id)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                Ok(())
+            }
+        },
         Some("--helper") => helper::run(),
         // Used by the helper unit's ExecStopPost, so an unclean exit still
         // leaves the fan under the EC's own control.
