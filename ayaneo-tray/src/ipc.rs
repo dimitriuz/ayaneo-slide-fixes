@@ -41,13 +41,23 @@ pub fn listen(tx: Sender<TrayMsg>, repaint: impl Fn() + Send + 'static) {
             if BufReader::new(stream).read_line(&mut line).is_err() {
                 continue;
             }
-            match line.trim() {
-                "show" => {
+            let line = line.trim();
+            match line.split_whitespace().collect::<Vec<_>>().as_slice() {
+                ["show"] => {
                     let _ = tx.send(TrayMsg::Show);
                     repaint();
                 }
-                "quit" => {
+                ["quit"] => {
                     let _ = tx.send(TrayMsg::Quit);
+                    repaint();
+                }
+                // The window owns the settings file while it is open, so a
+                // binding made on the command line is handed to it rather than
+                // written underneath it - otherwise the window's next save,
+                // which writes its whole in-memory copy, puts the old value
+                // back.
+                ["map", button, action] => {
+                    let _ = tx.send(TrayMsg::Map(button.to_string(), action.to_string()));
                     repaint();
                 }
                 _ => {}

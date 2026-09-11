@@ -117,11 +117,14 @@ $ ayaneo-tray --map
 $ ayaneo-tray --map RightTop esc
 ```
 
-Two traps worth knowing. Bindings are edits to the *running* profile, so loading
-a profile discards them — they are saved and re-applied, like the pointer
-settings. And `SetTargetDevices` replaces the entire target set, so the `dbus`
-target has to be passed every time or the UI actions (`app`, `osk`) have nowhere
-to land.
+Three traps worth knowing. Bindings are edits to the *running* profile, so
+loading a profile discards them — they are saved and re-applied, like the
+pointer settings. `SetTargetDevices` replaces the entire target set, so the
+`dbus` target has to be passed every time or the UI actions (`app`, `osk`) have
+nowhere to land. And an open settings window owns the settings file — it holds
+the whole struct in memory and rewrites it on any change — so `--map` hands the
+binding to a running window over the IPC socket instead of writing underneath
+it, and only writes directly when nothing is open.
 
 `app` maps a button to InputPlumber's `ui_quick` DBus action, which the tray
 listens for — that is how the window opens with no pointer attached.

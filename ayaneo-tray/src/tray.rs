@@ -14,6 +14,8 @@ use std::process::Command;
 pub enum TrayMsg {
     Show,
     Quit,
+    /// Bind a handheld button, sent by `--map` when a window is running.
+    Map(String, String),
 }
 
 /// Raise the running window, or start one.

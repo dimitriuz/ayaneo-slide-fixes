@@ -1127,6 +1127,12 @@ impl eframe::App for App {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                 }
                 TrayMsg::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+                TrayMsg::Map(button, action) => {
+                    self.button_map.insert(button.clone(), action.clone());
+                    self.settings.button_map = self.button_map.clone();
+                    let _ = state::save(&self.settings);
+                    self.submit(Job::IpButton(button, action));
+                }
             }
         }
 

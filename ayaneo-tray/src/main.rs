@@ -281,6 +281,17 @@ fn main() -> Result<()> {
         // mapping without a screen.
         Some("--map") => match (args.get(1), args.get(2)) {
             (Some(button), Some(action)) => {
+                if inputplumber::action(action).is_none() {
+                    anyhow::bail!("unknown action {action:?}");
+                }
+                // A running window owns the settings file: it keeps the whole
+                // struct in memory and rewrites it on any change, so a write
+                // from here would be undone by its next save. Hand the binding
+                // over instead, and only do it directly when nothing is open.
+                if ipc::send_to_gui(&format!("map {button} {action}")).is_ok() {
+                    println!("{button} -> {action} (via the open window)");
+                    return Ok(());
+                }
                 inputplumber::set_button_action(button, action).map_err(anyhow::Error::msg)?;
                 let mut s = state::load().0;
                 s.button_map.insert(button.clone(), action.clone());
