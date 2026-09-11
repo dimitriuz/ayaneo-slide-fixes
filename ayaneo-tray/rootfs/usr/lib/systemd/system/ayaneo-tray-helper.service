@@ -19,7 +19,13 @@ ExecStopPost=/usr/bin/ayaneo-tray --fan-auto
 NoNewPrivileges=no
 RestrictAddressFamilies=AF_UNIX
 MemoryDenyWriteExecute=yes
-CapabilityBoundingSet=CAP_SYS_RAWIO CAP_DAC_OVERRIDE
+# CAP_SYS_ADMIN is what lets ryzenadj write PCI config space past the first 64
+# bytes, which is where the SMU mailbox is. Without it every TDP write fails
+# with "PCI Bus is not writeable, check secure boot" - a message that sends you
+# looking at firmware rather than at this line. It is a broad capability, but
+# CAP_SYS_RAWIO above already permits arbitrary port I/O, so it does not widen
+# what this helper could do if it were subverted.
+CapabilityBoundingSet=CAP_SYS_RAWIO CAP_DAC_OVERRIDE CAP_SYS_ADMIN
 Restart=on-failure
 
 [Install]
