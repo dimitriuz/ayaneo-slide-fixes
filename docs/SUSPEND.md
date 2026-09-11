@@ -106,39 +106,75 @@ $ cat /sys/class/leds/ayaneo:rgb:joystick_rings/suspend_mode
 `off` makes the driver dark them instead. It resets at every boot, so ayaHelper
 sets it from a udev rule.
 
-## 3. The panel stays lit — a KDE fault, not a handheld one
+## 3. The panel stayed lit — Steam, in Deck mode
 
-Still open, and out of scope for anything on this machine to fix properly.
+**Not a handheld fault and not a compositor bug.** This one took the longest and
+every intermediate theory was wrong, so the dead ends are kept below.
 
-KWin is supposed to blank the display before the system sleeps. It does not:
+### Cause
+
+`deckify` installs `steam-jupiter-stable`, whose wrapper always launches the
+Deck build:
 
 ```
-kwin_wayland: Failed to delay sleep: The operation inhibition has been requested
-              for is already running
+/usr/bin/steam -> /usr/bin/steam-jupiter
+exec /usr/lib/steam/steam -steamdeck "$@"
 ```
 
-It tries to take a logind *delay* inhibitor after `PrepareForSleep` has already
-arrived, which is too late by design — and it is absent from `systemd-inhibit
---list` while NetworkManager and UPower are both there.
+In Deck mode Steam takes over display idle management — its own timers are in
+`config.vdf`:
 
-What does **not** work, tested:
+```
+"IdleBacklightDimBatterySeconds"  "300"
+"IdleBacklightDimACSeconds"       "900"
+```
 
-| Approach | Result |
-|---|---|
-| `brightness = 0` on `amdgpu_bl1` | Write sticks, panel only dims — this unit has a firmware-reported brightness floor, so no value blanks it |
-| `bl_power = 4` (`FB_BLANK_POWERDOWN`) | Attribute accepts the write, panel unaffected |
-| `kscreen-doctor --dpms off` | Exits 0, does nothing: connector stays `dpms=On`, backlight unchanged |
-| KDE's own `Turn Off Screen` shortcut via `kglobalaccel` | Blanks for **under a second**, then restores — with *no* input events on any of the 17 evdev devices and nothing logged by KWin or powerdevil |
+On a Deck that is correct. In a desktop session it holds a Wayland
+`idle-inhibit` inhibitor and never replaces the behaviour, so nothing blanks the
+screen — on idle *or* before suspend.
 
-That last row is the interesting one: KDE blanks the panel successfully on its
-own 15-minute idle timeout, so the hardware can do it. Invoked directly it
-undoes itself immediately for no reason either the compositor or the logs will
-admit to.
+A Wayland idle inhibitor is invisible to every list you would think to check:
 
-### Firmware context
+```
+$ systemd-inhibit --list          # only NetworkManager, UPower, PowerDevil sleep locks
+$ busctl --user call ... PolicyAgent ListInhibitions
+aas 0
+$ busctl --user call ... org.freedesktop.ScreenSaver GetActive
+b false
+```
 
-Worth knowing, though it is about how deeply the SoC sleeps rather than whether
-the panel can blank:
+Nothing listed, no DBus traffic, no log line — and yet `loginctl show-session`
+reports `IdleHint=no` indefinitely.
+
+### Proof
+
+With Steam closed, and nothing else changed:
+
+```
+   2s  b=4483 blp=0 dpms=On  en=enabled
+  26s  b=1346 blp=0 dpms=On  en=enabled     <- the 30s dim
+  56s  b=1346 blp=0 dpms=Off en=disabled    <- the 60s blank
+```
+
+KDE blanks the panel perfectly, and it is plainly visible in sysfs as
+`dpms=Off, enabled=disabled`. With Steam running, the same wait produces no
+change at all. Suspend then blanks the screen correctly too.
+
+### The dead ends, and why each was wrong
+
+| Attempt | Result | Why it looked convincing |
+|---|---|---|
+| `brightness = 0` | Panel only dims | This unit has a firmware brightness floor, so it *is* true that no brightness value blanks it — just not why the screen was on |
+| `bl_power = 4` | Accepted, no effect | KWin blanks by disabling the CRTC, not via the backlight device |
+| `kscreen-doctor --dpms off` | Exits 0, nothing changes | It did work; Steam's inhibitor undid it before the next sample |
+| KDE's `Turn Off Screen` shortcut | Blanked for **under a second**, then restored | Same again — and the sub-second blink was the clue that the panel *could* blank |
+| `kwin: Failed to delay sleep` | Real message, wrong conclusion | KWin does take its inhibitor late, but that was never what kept the panel lit |
+
+The observation that broke it open was the user's: *"KDE can successfully power
+off the screen after 15 minutes of inactivity."* That ruled out the firmware
+theory below and said the panel can blank, so something had to be undoing it.
+
+### Firmware context — real, but not the cause
 
 ```
 $ cat /sys/power/mem_sleep
@@ -148,10 +184,17 @@ amdgpu: Power consumption will be higher as BIOS has not been configured for
         suspend-to-idle.
 ```
 
-No `deep`/S3 is offered *and* low-power S0 idle is not declared. This firmware
-also needs `acpi=strict` on the kernel command line or the machine reboots at
-random — so it is not a well-behaved implementation, and there is no
-firmware-driven display power-down to fall back on.
+No `deep`/S3 is offered *and* low-power S0 idle is not declared; this firmware
+also needs `acpi=strict` or the machine reboots at random. That affects how
+deeply the SoC sleeps. It does not stop the panel blanking, which is what the
+test above proves.
+
+### What to do about it
+
+There is no Steam setting for this: Deck mode inhibits unconditionally. Either
+quit Steam when using the desktop session, or launch the non-Deck client
+(`/usr/lib/steam/steam`, bypassing the wrapper's `-steamdeck`) for desktop use
+and keep Deck mode for Game Mode.
 
 ## Unrelated but adjacent: the pad disappears across suspend
 
