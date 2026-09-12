@@ -196,6 +196,100 @@ quit Steam when using the desktop session, or launch the non-Deck client
 (`/usr/lib/steam/steam`, bypassing the wrapper's `-steamdeck`) for desktop use
 and keep Deck mode for Game Mode.
 
+## 4. Suspend costs ~1.9 W, because the SoC never sleeps
+
+Left suspended overnight at 54%, the machine was flat by morning and had cut
+power mid-suspend — the journal simply ends at `PM: suspend entry`.
+
+### The arithmetic
+
+```
+20:09:05   56%   discharging 8.5 W   (awake)
+20:16:25   suspend entry (s2idle)
+~09:16     flat
+```
+
+~54% of a 45 Wh pack is 24 Wh, gone in about 13 hours: **~1.9 W while
+"asleep"**. A working handheld suspend is 0.2–0.5 W. Nothing was malfunctioning
+— that is simply what sleep costs here.
+
+### Why
+
+```
+$ sudo python3 -c "d=open('/sys/firmware/acpi/tables/FACP','rb').read(); \
+    f=int.from_bytes(d[112:116],'little'); print(hex(f), bool(f&(1<<21)))"
+0xc5ad False                      <- LOW_POWER_S0_IDLE_CAPABLE not set
+
+$ ls /sys/bus/acpi/devices/ | grep AMDI000
+                                  <- no AMD PMC device at all
+
+$ cat /sys/power/mem_sleep
+[s2idle]                          <- and no S3 to fall back on
+```
+
+`amd_pmc` is the driver that drives an AMD SoC into S0i3. It loads fine but has
+nothing to bind to, because the firmware never exposes the controller. So
+s2idle freezes the CPUs and leaves the rails up. Same root as amdgpu's
+*"BIOS has not been configured for suspend-to-idle"*, and of a piece with a
+firmware that needs `acpi=strict` to avoid random reboots.
+
+This is not fixable from the OS.
+
+### The fix: suspend-then-hibernate
+
+Hibernation is the way out, and it works once there is somewhere to put the
+image. The default zram swap cannot hold one — it lives in RAM.
+
+```bash
+btrfs subvolume create /swap                      # own subvolume: snapshots skip it
+btrfs filesystem mkswapfile --size 26g /swap/swapfile   # sets NOCOW + no compression
+swapon /swap/swapfile
+btrfs inspect-internal map-swapfile -r /swap/swapfile   # -> resume_offset
+```
+
+then `/swap/swapfile none swap defaults 0 0` in fstab, and on the kernel command
+line (`/etc/default/limine`, then `limine-update`):
+
+```
+resume=UUID=<root fs uuid> resume_offset=<offset>
+```
+
+mkinitcpio's `systemd` hook handles resume natively — no `resume` hook needed.
+Only the two real boot entries get the parameters; snapper's snapshot entries
+deliberately do not, since resuming an image into a different snapshot would
+corrupt the filesystem.
+
+**KDE cannot ask for it.** PowerDevil offers only `suspendToRam`,
+`suspendToDisk` and `suspendHybrid`, so the desktop can never request
+suspend-then-hibernate. Rather than change how the machine is used, change what
+suspend means — logind starts `systemd-suspend.service`, so intervene there:
+
+```ini
+# /etc/systemd/system/systemd-suspend.service.d/10-then-hibernate.conf
+[Service]
+ExecStart=
+ExecStart=/usr/lib/systemd/systemd-sleep suspend-then-hibernate
+```
+
+with `HibernateDelaySec=30min` in `/etc/systemd/sleep.conf.d/`.
+
+### Verified
+
+```
+09:36:39  Performing sleep operation 'suspend'...
+09:38:40  System returned from sleep operation 'suspend-then-hibernate'.
+09:38:40  Performing sleep operation 'hibernate'...
+09:40:10  System returned from sleep operation 'suspend-then-hibernate'.
+```
+
+`uptime` still counted from before the cycle, and a `ping` left running in a
+terminal carried on afterwards — it resumed rather than cold-booted.
+
+One caveat worth knowing when testing: a cold boot logs
+`PM: Image not found (code -22)` because there is no image yet. That line is
+easy to mistake for a failed resume when reading the log of the boot that
+*later* hibernated.
+
 ## Unrelated but adjacent: the pad disappears across suspend
 
 See [INPUT-CONTROLLER.md](INPUT-CONTROLLER.md) — the gamepad MCU powers down and
