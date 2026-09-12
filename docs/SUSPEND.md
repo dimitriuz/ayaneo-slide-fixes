@@ -196,6 +196,47 @@ quit Steam when using the desktop session, or launch the non-Deck client
 (`/usr/lib/steam/steam`, bypassing the wrapper's `-steamdeck`) for desktop use
 and keep Deck mode for Game Mode.
 
+## 3b. Shutting Steam down before sleep — and why the obvious way fails
+
+Since only Steam's exit releases the inhibitor, a `system-sleep` hook can ask it
+to quit before suspending. The obvious implementation does not work:
+
+```
+09:48:34  systemd-sleep: Successfully froze unit 'user.slice'.
+09:48:34  steam-sleep: asking Steam to shut down
+09:49:01  steam-sleep: Steam still running after 25s, sleeping anyway
+```
+
+**systemd freezes user sessions before running `system-sleep` hooks.** Steam is
+already frozen when the hook speaks to it, so it cannot answer `-shutdown`, the
+hook waits out its whole timeout, and the machine suspends with the inhibitor
+still held — the screen stays lit showing a frozen Steam window. Steam then
+finishes exiting on resume, which makes it look as though the hook worked.
+
+The switch for this is `SYSTEMD_SLEEP_FREEZE_USER_SESSIONS=false`, set on the
+service, which restores the pre-v254 ordering:
+
+```ini
+# /etc/systemd/system/systemd-suspend.service.d/10-then-hibernate.conf
+[Service]
+Environment=SYSTEMD_SLEEP_FREEZE_USER_SESSIONS=false
+ExecStart=
+ExecStart=/usr/lib/systemd/systemd-sleep suspend-then-hibernate
+```
+
+With that, the hook works and the whole thing takes about two seconds — Steam
+exits quickly when it is not frozen and fighting the request.
+
+The hook itself uses Steam's own `-shutdown` rather than a signal, so downloads
+and cloud saves flush, and it **skips the shutdown while a game is running**
+(`pgrep -f "reaper SteamLaunch"`). Suspending mid-game is a normal thing to do
+and taking the client down would take the game with it.
+
+The cost: every suspend waits for Steam to exit, and user processes are no
+longer frozen before sleep. If that trade is not worth it, the alternative is to
+leave Steam alone and shorten `HibernateDelaySec` — the screen is only lit until
+the machine hibernates, and the battery is safe either way.
+
 ## 4. Suspend costs ~1.9 W, because the SoC never sleeps
 
 Left suspended overnight at 54%, the machine was flat by morning and had cut
