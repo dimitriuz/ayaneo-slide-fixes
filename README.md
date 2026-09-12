@@ -17,6 +17,14 @@ which.
 
 ---
 
+## Setting a machine up from scratch
+
+Doing all of this in order, on a fresh CachyOS install — and which packages have
+to be held back so an update does not silently undo it:
+**[SETUP-FROM-SCRATCH.md](docs/SETUP-FROM-SCRATCH.md)**
+
+---
+
 ## Find your problem
 
 ### Display

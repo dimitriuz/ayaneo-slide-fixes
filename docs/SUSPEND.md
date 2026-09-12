@@ -312,7 +312,7 @@ ExecStart=
 ExecStart=/usr/lib/systemd/systemd-sleep suspend-then-hibernate
 ```
 
-with `HibernateDelaySec=30min` in `/etc/systemd/sleep.conf.d/`.
+with `HibernateDelaySec=10min` in `/etc/systemd/sleep.conf.d/`.
 
 ### Verified
 

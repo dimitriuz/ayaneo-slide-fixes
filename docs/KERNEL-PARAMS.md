@@ -87,7 +87,13 @@ below the driver's 14.9%, so it does not solve the too-bright minimum.
 
 ### `acpi=strict`
 
-Unrelated to backlight. Left over from experimentation; drop it.
+Unrelated to backlight, and **required on this machine** — without it it reboots
+at random. Originally recorded here as "left over from experimentation; drop it",
+which was wrong: it is load-bearing.
+
+It is of a piece with the rest of this firmware, which also declares neither
+low-power S0 idle nor an AMD PMC device and offers no S3 — see
+[SUSPEND.md](SUSPEND.md). Not a well-formed ACPI implementation.
 
 ---
 
