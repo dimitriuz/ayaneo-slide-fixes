@@ -1,263 +1,101 @@
-# AYANEO SLIDE — Linux backlight fixes
+# AYANEO SLIDE on Linux — problems, causes and fixes
 
-Fixes two independent backlight problems on the **AYANEO SLIDE** (AMD Ryzen 7 7840U,
-Phoenix / DCN 3.1.4, eDP panel `AYANEOHD`) running a mainline‑based kernel **7.x**:
+What went wrong on one handheld, why, and what fixed it. Every entry below is
+something that was actually broken on this machine, investigated until the cause
+was known, and written up with the evidence rather than the guess.
 
-1. **Minimum brightness far too bright** — even at 0% the panel stays at ~21% PWM duty.
-2. **Whole slider range feels compressed** — only ~100 usable steps and the top ~20%
-   of the slider does nothing.
+**Tested on exactly one machine:** AYANEO SLIDE (board `AS01`, EC `0x001b0100`,
+Ryzen 7 7840U / Phoenix, eDP panel `AYANEOHD`) running CachyOS with
+`linux-cachyos-deckify` 7.2.3 and KDE Plasma on Wayland. Some findings generalise
+to other AYANEO models or to any AMD laptop; most do not. Each document says
+which.
 
-Problem 1 has two causes stacked on top of each other: a **kernel 7.x regression**
-that affects *every* AMD device on the PWM backlight path, and a **firmware‑reported
-floor** specific to this machine.
-
-> Verified on CachyOS, `linux-cachyos-deckify` 7.2.3. The regression fix applies to
-> any distro on kernel ≥ 7.0.
-
----
-
-## The tool lives elsewhere now
-
-The tray application that came out of this research — controller, lighting, fan,
-power, charging and button bindings — is its own project:
-
-**[ayaHelper](https://github.com/dimitriuz/ayahelper)**
-
-This repository keeps the research it is built on: the protocol work, the EC and
-AYASpace reverse engineering, and the kernel backlight fixes below.
+> The tray application that came out of this work — controller, lighting, fan,
+> power, charging and button bindings — is its own project:
+> **[ayaHelper](https://github.com/dimitriuz/ayahelper)**. This repository is the
+> research it stands on.
 
 ---
 
-## TL;DR
+## Find your problem
 
-```bash
-git clone https://github.com/dimitriuz/ayaneo-slide-fixes
-cd ayaneo-slide-fixes
-# apply patches/ to a 7.x kernel tree, rebuild, install
-# then set ONE kernel parameter:
-#   amdgpu.dcdebugmask=0x40000
-```
+### Display
 
-Suspend problems: **[docs/SUSPEND.md](docs/SUSPEND.md)** ·
-Full walkthrough: **[docs/BUILD.md](docs/BUILD.md)** ·
-Why it broke: **[docs/ROOT-CAUSE.md](docs/ROOT-CAUSE.md)** ·
-Parameters: **[docs/KERNEL-PARAMS.md](docs/KERNEL-PARAMS.md)**
-
-Also here, unrelated to the backlight: the **gamepad settings protocol**
-(stick deadzone and sensitivity) reverse-engineered and implemented for Linux —
-**[docs/GAMEPAD-PROTOCOL.md](docs/GAMEPAD-PROTOCOL.md)**.
-
----
-
-## Symptoms
-
-| | before | after |
+| Symptom | Cause | Read |
 |---|---|---|
-| `max_brightness` | 56026 | 56026 |
-| `actual_brightness` at brightness `0` | **6797** (~21% duty) | **0** |
-| usable slider steps | ~100, top ~20% dead | ~100, full range |
-| peak brightness | 100% duty | 85.5% duty (firmware max) |
-| dimmest setting | too bright for a dark room | panel fully off at 0 |
+| Minimum brightness far too bright — at 0% the panel still sits at ~21% duty | Two stacked causes: a kernel 7.x regression on the AMD PWM path, and a firmware-reported floor specific to this panel | [ROOT-CAUSE.md](docs/ROOT-CAUSE.md) → [BUILD.md](docs/BUILD.md) |
+| Brightness slider feels compressed — ~100 usable steps, top ~20% does nothing | The same millipercent conversion bug | [ROOT-CAUSE.md](docs/ROOT-CAUSE.md) |
+| Which kernel parameters this machine needs, and why | `amdgpu.dcdebugmask=0x40000`, `acpi=strict` | [KERNEL-PARAMS.md](docs/KERNEL-PARAMS.md) |
 
----
+Fixes: [`patches/0001-drm-amd-display-*`](patches/) and
+[`patches/0002-drm-panel-*`](patches/), applied to a 7.x tree.
 
-## Root cause 1 — kernel 7.x regression (affects all AMD PWM backlights)
+### Sleep and battery
 
-Commit [`3c108046e1d6`](https://git.kernel.org/linus/3c108046e1d6) *("drm/amd/display:
-Add power module on Linux")* replaced a direct 16‑bit PWM write with a millipercent
-conversion:
-
-```c
-/* power module uses millipercent */
-get_brightness_range(caps, &min, &max);
-brightness = DIV_ROUND_CLOSEST(brightness * 100, (max - min)) * 1000;
-```
-
-`brightness` has already been mapped into the absolute range `[min, max]`, but the
-expression never subtracts `min` and divides by the wrong span. The consumer,
-`backlight_millipercent_to_pwm()`, expects a value *relative* to that range:
-
-```c
-pwm = min_backlight_pwm + millipercent * backlight_range / 100000;
-```
-
-Three defects result:
-
-* **`min` not subtracted** → slider 0 requests `21000` millipercent instead of `0`.
-* **whole‑percent rounding** → resolution collapses to 100 steps regardless of `max_brightness`.
-* **can exceed `100000`** → the top of the slider clamps and becomes a dead zone.
-
-Fixed by [`patches/0001-*`](patches/).
-
-## Root cause 2 — firmware floor (AYANEO SLIDE specific)
-
-ACPI ATIF `QUERY_BRIGHTNESS_TRANSFER_CHARACTERISTICS` reports:
-
-```
-min_input_signal = 38    max_input_signal = 218    ac_level = 80    dc_level = 50
-```
-
-amdgpu scales these by `0x101`, so the PWM floor is `38 × 257 = 9766` of 65535 —
-**14.9% duty**, still too bright in a dark room even with the regression fixed.
-
-The panel advertises **no AUX/DPCD backlight control** (DPCD `0x700..0x72f` reads all
-zero), so PWM is the only control path and this floor cannot be side‑stepped by
-switching backlight control type.
-
-Fixed by [`patches/0002-*`](patches/), a `.min_brightness = 1` quirk — the same
-treatment upstream already gives the Steam Deck and Framework panels.
-
----
-
-## How this was confirmed
-
-Booting **6.18 LTS**, which still has the pre‑regression code, was the decisive test:
-the firmware caps were **byte‑identical**, but behaviour differed completely — which
-rules out any hardware or firmware explanation.
-
-| measurement | 7.2 (buggy) | 6.18 LTS |
+| Symptom | Cause | Read |
 |---|---|---|
-| caps line | `min: 9766, max: 56026, ac 80, dc 50` | **identical** |
-| `max_brightness` | 56026 | 46260 (`max - min`) |
-| `actual` at brightness 0 | 6797 | **0** |
-| transfer curve | S‑curve, ~100 steps | perfect identity, `set == actual` |
-| 40‑unit steps | no change (~560 treads) | every step changes |
+| Press sleep and nothing happens for 15–30 s; screen stays lit and unresponsive | `ayaneo-platform` stops a thread sitting in `msleep(30000)`, and waits out the remainder | [SUSPEND.md §1](docs/SUSPEND.md) → [`patches/ayaneo-platform-interruptible-bypass-sleep.patch`](patches/ayaneo-platform-interruptible-bypass-sleep.patch) |
+| Joystick rings glow while the machine is asleep | The driver's `suspend_mode` defaults to `oem`, which hands the LEDs to the EC | [SUSPEND.md §2](docs/SUSPEND.md) |
+| Screen stays lit through suspend | Deck-mode Steam holds a Wayland idle inhibitor, invisible to every inhibitor list | [SUSPEND.md §3](docs/SUSPEND.md) |
+| A sleep hook that tries to close an application does nothing | systemd freezes user sessions *before* running sleep hooks | [SUSPEND.md §3b](docs/SUSPEND.md) |
+| Battery flat after a night asleep | Firmware declares neither low-power S0 idle nor an AMD PMC, and offers no S3 — suspend costs ~1.9 W | [SUSPEND.md §4](docs/SUSPEND.md) |
+| Controller gone after resume until you press a button on it | The gamepad MCU powers down and its descriptor has no remote-wakeup bit | [INPUT-CONTROLLER.md](docs/INPUT-CONTROLLER.md) |
 
-Independent confirmation of the whole‑percent rounding: computing
-`brightness × 100 / (max − min)` at each observed step boundary gives
-`57.56, 58.53, 59.60, 60.56, 61.52` — every boundary lands just past a `k + 0.5`
-crossing, the exact signature of `DIV_ROUND_CLOSEST`. Predicted saturation onset
-43915 of 56026; measured in `(43400, 43950]`.
+### Controller and input
 
-Ruled out along the way, each with evidence rather than assumption: ABM
-(`panel_power_savings = 0`), a userspace daemon overwriting writes (values persisted),
-AUX/DPCD backlight (register block all zero), the ACPI video path (firmware `_BCL`
-floor is 10, barely below 14.9%), and an ACPI table override (`0xDA` appears nowhere
-as an AML constant — checked with a positive control).
+| Symptom | Cause | Read |
+|---|---|---|
+| Stick deadzone and sensitivity cannot be changed from Linux | They are a stored setting on a GuLiKit MCU, reached over an on-board UART — not the EC, not HID | [GAMEPAD-PROTOCOL.md](docs/GAMEPAD-PROTOCOL.md) |
+| A stick does not return to the same place twice | Direction-dependent mechanical hysteresis, ~16% on the left stick. Not calibration — there is no calibration command | [INPUT-CONTROLLER.md](docs/INPUT-CONTROLLER.md) |
+| Squeezing a trigger moves the cursor | Trigger-to-stick crosstalk, ~11.5% peak — measure it with [`scripts/crosstalk.py`](scripts/crosstalk.py) | [INPUT-CONTROLLER.md](docs/INPUT-CONTROLLER.md) |
+| LC and RC buttons do nothing | They *are* delivered — as gamepad capabilities the emulated target cannot express, so they are translated and dropped | [AYASPACE-FEATURES.md](docs/AYASPACE-FEATURES.md) |
+| Stick-as-mouse ignores the desktop's pointer settings and moves too fast | The Steam Deck target speaks HID; Steam claims it and drives the pointer itself | [INPUTPLUMBER-GUIDE.md](docs/INPUTPLUMBER-GUIDE.md) |
+| A game does not see the controller at all | The Steam Deck target has no `/dev/input` node | [INPUTPLUMBER-GUIDE.md](docs/INPUTPLUMBER-GUIDE.md) |
+| Handheld Daemon crash-looping against InputPlumber | Two daemons managing the same pad | [INPUT-CONTROLLER.md §1](docs/INPUT-CONTROLLER.md) |
 
----
+### Power, charging and lighting
 
-## Known limitation
-
-~100 discrete levels remain. This is **not** from these patches — the DC power module
-floor‑indexes a ~101‑entry lookup table:
-
-```c
-index = ((num_backlight_levels - 1) * millipercent) / 100000;
-pwm   = backlight_lut[index];
-```
-
-Matches the measured `56026 / 100 ≈ 560` unit treads. It is upstream behaviour on this
-code path (`use_linear_backlight_curve` is false) and is not perceptible on a
-0–100% slider.
-
-## Heads-up
-
-With `min_brightness = 1` the floor is 0% duty, so **brightness `0` turns the panel
-off**. If you would rather have a dim-but-never-off floor, use `.min_brightness = 6`
-in `patches/0002-*` (≈2% duty).
+| Symptom | Cause | Read |
+|---|---|---|
+| Charge limit and bypass charging do nothing | The write reaches EC `0xd1d1` and the battery charges through it. AYASpace's own charge settings do nothing on this unit either, on Windows | [CHARGING.md](docs/CHARGING.md) |
+| TDP set in a tool does not stick | Decky's PowerControl re-runs `ryzenadj` every 15 s; hhd resets it after every resume | [AYASPACE-FEATURES.md](docs/AYASPACE-FEATURES.md) |
+| Keyboard backlight cannot be controlled | HID feature report `0x41` on the vendor interface | [AYASPACE-FEATURES.md](docs/AYASPACE-FEATURES.md) |
+| Ring LED effects (Radar, Ripple) cannot be reproduced | They are host-side animations, and the driver exposes one colour for both rings | [AYASPACE-FEATURES.md](docs/AYASPACE-FEATURES.md) |
+| VRAM size cannot be changed from Linux | AYASpace calls a WMI method provided by a *Windows driver*, not by firmware | [AYASPACE-FEATURES.md](docs/AYASPACE-FEATURES.md) |
 
 ---
 
-## Upstream status
+## Reverse engineering, if you want to go further
 
-As of **2026‑09‑09** the regression is present in `torvalds/master` **and** in AMD's
-own `amd-staging-drm-next`. No newer, test, dev or beta kernel fixes it.
+| Document | What it covers |
+|---|---|
+| [GAMEPAD-PROTOCOL.md](docs/GAMEPAD-PROTOCOL.md) | The full gamepad settings protocol: framing, checksum, every field, and how the AYASpace decompilation got there |
+| [AYASPACE-FEATURES.md](docs/AYASPACE-FEATURES.md) | What AYASpace exposes, feature by feature, and how much of it Linux can reach |
+| [EC-INVESTIGATION.md](docs/EC-INVESTIGATION.md) | How the EC was ruled out as the home of the stick settings — a closed dead end, kept because it was convincing |
+| [CAPTURE-PLAN.md](docs/CAPTURE-PLAN.md) · [CAPTURE-DEADZONE.md](docs/CAPTURE-DEADZONE.md) | Capturing AYASpace's traffic from Windows, when static analysis is not enough |
+| [INPUTPLUMBER-GUIDE.md](docs/INPUTPLUMBER-GUIDE.md) | InputPlumber in practice: profiles, capability maps, target devices, and the traps in each |
 
-`patches/` are formatted for `git am` with `Fixes:` tags. They carry **no
-`Signed-off-by`** — that line is a DCO certification only the sender can make, so use
-`git am -s`. See [docs/BUILD.md](docs/BUILD.md#sending-upstream).
+The Ghidra container used for the AYASpace work is in [`ghidra/`](ghidra), with
+the exact commands in GAMEPAD-PROTOCOL.md. `AYASpaceCef.exe` is not
+redistributed here — extract it from an installer.
 
-## Repo layout
+## What else is in here
 
-```
-patches/   the two kernel patches (git am format), plus
-           inputplumber/ - configurable axis-to-mouse deadzone
-docs/      root cause, build guide, kernel parameters, controller/input
-           findings, and the reverse-engineered gamepad protocol
-config/    InputPlumber stick-to-mouse mapping
-systemd/   unit that reloads the InputPlumber profile at boot
-ghidra/    Dockerfile for the Ghidra + ghidra-cli container used for the RE
-scripts/   gulikit-ctl.py (gamepad settings over the MCU's UART);
-           ayaneo-kbdlight.py (keyboard backlight over HID report 0x41);
-           stickverify.py, mouseverify.py (input diagnostics);
-           build-inputplumber.sh (rebuild with the local patches);
-           measure-backlight.sh, measure-stick.py, sticklive.py,
-           stickcheck.py (diagnostics); ayaneo-ctl.py (vendor HID channel);
-           rebuild.sh, ip-load-profile.sh, winvm.sh
-```
+| Path | |
+|---|---|
+| [`patches/`](patches) | Kernel backlight patches, the `ayaneo-platform` suspend patch, and InputPlumber patches |
+| [`scripts/`](scripts) | Measurement and control tools — `gulikit-ctl.py`, `ayaneo-kbdlight.py`, `crosstalk.py`, `stickverify.py`, the EC dumpers |
+| [`config/`](config) · [`systemd/`](systemd) | InputPlumber profile and unit |
 
-### Using InputPlumber
+Most of what these scripts do by hand, ayaHelper does with a UI.
 
-If a game does not detect your controller — with or without InputPlumber — see
-**[docs/INPUTPLUMBER-GUIDE.md](docs/INPUTPLUMBER-GUIDE.md)**. The usual cause is
-that InputPlumber grabs the physical pad exclusively and games only ever see the
-*emulated* target, which by default here is a Valve Steam Deck Controller that
-non-Steam titles may not map. Switching the target to `xb360` fixes most cases.
+## Scope, and a warning
 
-### AYASpace features from Linux
+This is reverse engineering of undocumented hardware, verified on one machine.
+Several entries above are **negative results** — things that cannot be made to
+work on this unit, recorded so nobody spends an evening rediscovering them.
 
-A full inventory of what AYASpace can do, the transport behind each feature, and
-how much of it works on Linux: **[docs/AYASPACE-FEATURES.md](docs/AYASPACE-FEATURES.md)**.
-Two independent transports carry nearly all of it, and both are now implemented:
-
-```bash
-# gamepad MCU, over an on-board UART
-sudo gulikit-ctl set --deadzone off --right 50
-sudo gulikit-ctl set --trigger-l2 high --turbo-a burst --rumble medium
-
-# keyboard backlight, over HID feature report 0x41
-sudo ayaneo-kbdlight --color 00ff88 --mode breath
-```
-
-### Gamepad settings from Linux
-
-**The gamepad settings protocol is solved** — see
-**[docs/GAMEPAD-PROTOCOL.md](docs/GAMEPAD-PROTOCOL.md)**. AYASpace does not use
-USB or the EC for these; it talks to a **GuLiKit gamepad MCU over an on-board
-legacy 16550 UART** — I/O `0x3E8` (COM3 on Windows, `/dev/ttyS2` on Linux) at
-115200 8N1. `scripts/gulikit-ctl.py` implements it:
-
-```bash
-sudo install -m755 scripts/gulikit-ctl.py /usr/local/bin/gulikit-ctl
-sudo gulikit-ctl init --factory
-sudo gulikit-ctl probe
-sudo gulikit-ctl set --deadzone off --right 50
-```
-
-It covers the stick deadzone, per-stick sensitivity (50/100/150), rumble level,
-trigger and gyro levels, per-button turbo, and ABXY swap.
-
-The **keyboard backlight** is solved too, on a different transport: a HID
-feature report `0x41` to the keyboard MCU — `scripts/ayaneo-kbdlight.py`. Of the
-rest, the stick ring RGB (`ayaneo:rgb:joystick_rings`) and TDP/power (HHD,
-`platform_profile`) already work on Linux and need nothing.
-
-## Also in this repo: controller / right-stick fixes
-
-Separate from the backlight, three input issues on the same device — see
-**[docs/INPUT-CONTROLLER.md](docs/INPUT-CONTROLLER.md)**:
-
-1. **Handheld Daemon crash-looping every 3 s** (fixable) — HHD and InputPlumber both
-   try to manage the gamepad; InputPlumber wins the exclusive grab and HHD retries
-   forever with `EBUSY`.
-2. **Right-stick pointer far too fast, and KDE's slider does nothing** (**fixed**) —
-   the motion comes from Steam's Desktop Layout injected via XTEST, which bypasses
-   libinput acceleration. Fixed by driving InputPlumber's own `mouse` target instead,
-   which exposes a `speed_pps` knob.
-3. **Stick deadzone far too wide** (**fixed, natively**) — both sticks, 15-25%
-   (left) and 30-50% (right) of full scale before anything registers. It is a
-   *stored setting* in the gamepad MCU, not hardware. It can now be turned off
-   from Linux with `gulikit-ctl set --deadzone off`; no Windows, no VM, no
-   firmware flash. Protocol: **[docs/GAMEPAD-PROTOCOL.md](docs/GAMEPAD-PROTOCOL.md)**.
-
-## License
-
-Patches are kernel code: **GPL-2.0**. Documentation and scripts: GPL-2.0 as well, for
-simplicity.
-
-## Disclaimer
-
-Custom kernels and backlight registers. Verified on one AYANEO SLIDE. A bad backlight
-floor can leave you with a dark screen — know how to boot a previous kernel entry
-before you start.
+Anything here that writes to the embedded controller, to SMU power limits or to
+firmware settings can destabilise or damage a machine it was not written for.
+The model gates in the tooling are a guard, not a guarantee. There is no warranty
+of any kind; you run this at your own risk. Unaffiliated with AYANEO.
