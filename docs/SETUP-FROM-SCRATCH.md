@@ -152,15 +152,21 @@ Only the two real boot entries get these; snapper's snapshot entries deliberatel
 do not — resuming an image into a different snapshot would corrupt the filesystem.
 mkinitcpio's `systemd` hook handles resume natively, so no `resume` hook is needed.
 
-Then make the desktop's "Sleep" mean suspend-then-hibernate. KDE only knows
-suspend, hibernate and hybrid, so the redirect has to happen below it:
+Then tell KDE to use it: System Settings → Power Management →
+*When sleeping, enter* → **Standby, then hibernate**. Leave the power button on
+*Sleep* — setting it to *Hibernate* writes the image every time and loses the
+instant resume for a short break.
+
+PowerDevil then calls logind's `SuspendThenHibernate()`, which runs
+`systemd-suspend-then-hibernate.service`. If you also want the Steam hook in
+step 7, that unit needs the older hook ordering:
 
 ```ini
-# /etc/systemd/system/systemd-suspend.service.d/10-then-hibernate.conf
+# /etc/systemd/system/systemd-suspend-then-hibernate.service.d/10-sleep-hooks.conf
+# worth adding under systemd-suspend.service.d/ and systemd-hibernate.service.d/ too,
+# so the hook works whichever operation is requested
 [Service]
 Environment=SYSTEMD_SLEEP_FREEZE_USER_SESSIONS=false
-ExecStart=
-ExecStart=/usr/lib/systemd/systemd-sleep suspend-then-hibernate
 ```
 
 ```ini
@@ -180,8 +186,8 @@ stays lit through suspend. If that bothers you, a `system-sleep` hook can shut i
 down first — [SUSPEND.md §3b](SUSPEND.md), including why the obvious version of
 that hook does nothing.
 
-`SYSTEMD_SLEEP_FREEZE_USER_SESSIONS=false` in step 6 is what makes it work; it is
-in that drop-in already.
+`SYSTEMD_SLEEP_FREEZE_USER_SESSIONS=false` from step 6 is what makes it work —
+without it the hook talks to an already-frozen Steam and achieves nothing.
 
 ---
 

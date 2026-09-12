@@ -214,14 +214,14 @@ still held — the screen stays lit showing a frozen Steam window. Steam then
 finishes exiting on resume, which makes it look as though the hook worked.
 
 The switch for this is `SYSTEMD_SLEEP_FREEZE_USER_SESSIONS=false`, set on the
-service, which restores the pre-v254 ordering:
+service, which restores the pre-v254 ordering. It has to go on whichever unit
+actually runs — there are several sleep units and logind picks one by operation:
 
 ```ini
-# /etc/systemd/system/systemd-suspend.service.d/10-then-hibernate.conf
+# /etc/systemd/system/systemd-suspend-then-hibernate.service.d/10-sleep-hooks.conf
+# …and the same file under systemd-suspend.service.d/ and systemd-hibernate.service.d/
 [Service]
 Environment=SYSTEMD_SLEEP_FREEZE_USER_SESSIONS=false
-ExecStart=
-ExecStart=/usr/lib/systemd/systemd-sleep suspend-then-hibernate
 ```
 
 With that, the hook works and the whole thing takes about two seconds — Steam
@@ -300,19 +300,38 @@ Only the two real boot entries get the parameters; snapper's snapshot entries
 deliberately do not, since resuming an image into a different snapshot would
 corrupt the filesystem.
 
-**KDE cannot ask for it.** PowerDevil offers only `suspendToRam`,
-`suspendToDisk` and `suspendHybrid`, so the desktop can never request
-suspend-then-hibernate. Rather than change how the machine is used, change what
-suspend means — logind starts `systemd-suspend.service`, so intervene there:
+**Ask KDE for it — it can.** System Settings → Power Management →
+*When sleeping, enter* → **Standby, then hibernate** (`SleepMode=3` in
+`powerdevilrc`). Leave the power button on *Sleep*: setting it to *Hibernate*
+writes the image every time and loses the instant RAM resume for a short break,
+for no benefit — after the delay both end in the same place.
+
+Then set the delay:
 
 ```ini
-# /etc/systemd/system/systemd-suspend.service.d/10-then-hibernate.conf
-[Service]
-ExecStart=
-ExecStart=/usr/lib/systemd/systemd-sleep suspend-then-hibernate
+# /etc/systemd/sleep.conf.d/10-hibernate-delay.conf
+[Sleep]
+HibernateDelaySec=10min
 ```
 
-with `HibernateDelaySec=10min` in `/etc/systemd/sleep.conf.d/`.
+> An earlier version of this document said PowerDevil could not request
+> suspend-then-hibernate, on the strength of its legacy DBus action interface
+> offering only `suspendToRam`, `suspendToDisk` and `suspendHybrid`, and worked
+> around it by overriding `systemd-suspend.service` to run the
+> `suspend-then-hibernate` verb instead. That worked, but it redefined what a
+> plain suspend meant for *everything* on the system — a script or another
+> application asking for a suspend would silently have got something else. The
+> sleep **mode** is simply a separate setting from the sleep **action**. Check
+> the settings before concluding a desktop cannot do something.
+
+Two things worth knowing about the delay:
+
+* `HibernateOnACPower=` (systemd ≥ 256) can refuse to hibernate while plugged
+  in. It defaults to `yes`, so this works on AC, but it is worth confirming with
+  `systemd-analyze cat-config systemd/sleep.conf` before blaming anything else.
+* The journal reports `Performing sleep operation 'suspend'` on the way in and
+  `returned from sleep operation 'suspend-then-hibernate'` on the way out. That
+  pair is the suspend *phase* of the operation, not a plain suspend.
 
 ### Verified
 
